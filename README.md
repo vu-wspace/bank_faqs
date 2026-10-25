@@ -40,6 +40,7 @@ bank_faqs/
 │       ├── mapping.py            # Đăng ký tool và gán tool cho agent
 │       └── get_conversation_by_id.py  # Gộp các lượt hội thoại theo id
 ├── docker-compose.yml            # Qdrant
+├── langgraph.json                # Cấu hình cho `langgraph dev`
 └── pyproject.toml
 ```
 
@@ -107,6 +108,21 @@ res = agent.invoke({'messages': [{'role': 'user', 'content': 'thẻ bị nuốt 
 print(res['messages'][-1].text)
 ```
 
+**4. LangGraph Studio / API server**
+
+```bash
+uv run langgraph dev
+```
+
+Server chạy tại http://127.0.0.1:2024 với graph `agent_main` (khai báo trong `langgraph.json`). Có thể chat và xem từng bước gọi tool trên LangGraph Studio (link in ra khi khởi động), hoặc gọi qua API:
+
+```bash
+curl http://127.0.0.1:2024/runs/wait -H 'Content-Type: application/json' \
+  -d '{"assistant_id": "agent_main", "input": {"messages": [{"role": "user", "content": "lãi suất 12 tháng BIDV"}]}}'
+```
+
+Trên Windows, cần làm bước trong mục [Lưu ý trên Windows](#lưu-ý-trên-windows) trước.
+
 ## Các tool
 
 | Tool | Nguồn dữ liệu | Dùng khi |
@@ -123,6 +139,18 @@ print(res['messages'][-1].text)
 
 ## Lưu ý trên Windows
 
-Trên một số máy Windows, `torch` báo lỗi `WinError 1114 ... c10.dll` nếu `pandas` hoặc `truststore` được import trước nó (xung đột MSVC runtime). `src/bank_faqs/__init__.py` xử lý bằng cách nạp trước `msvcp140.dll` của hệ thống. Vì vậy các file chạy được (`vector_db.py`, `tools.py`, `bank_agent.py`) đều có `import bank_faqs` ở **dòng đầu tiên**. Khi tạo file chạy mới, hãy giữ quy ước này.
+**Lỗi `OSError: [WinError 1114] ... torch\lib\c10.dll`**
+
+Nguyên nhân: trên máy có antivirus như McAfee, khi Python chạy truy vấn WMI (module `platform` làm việc này, và `pandas`, `truststore`, `langgraph dev` đều gọi `platform`), plugin AMSI của antivirus được nạp vào process kèm một bản `msvcp140.dll` rất cũ (14.00). `torch` cần bản mới hơn nên không khởi tạo được.
+
+Cách xử lý: nạp `msvcp140.dll` của Windows ngay khi Python khởi động, bằng một file `.pth` trong venv. **Chạy lại lệnh này mỗi khi tạo lại `.venv`:**
+
+```bash
+uv run python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[-1], '_msvcp140_preload.pth').write_text(\"import sys, ctypes; sys.platform == 'win32' and ctypes.WinDLL('msvcp140.dll')\n\")"
+```
+
+Kiểm tra: `uv run python -c "import pandas, torch"` không báo lỗi là được.
+
+Dự phòng khi chưa có file `.pth`: `src/bank_faqs/__init__.py` cũng nạp trước `msvcp140.dll`, và các file chạy được (`vector_db.py`, `tools.py`, `bank_agent.py`) đều có `import bank_faqs` ở **dòng đầu tiên**, nên `python -m ...` vẫn chạy được. Tuy vậy, chỉ cách này thì không đủ cho `langgraph dev`, vì server import `pandas` trước khi nạp code của dự án.
 
 Nếu chuyển hướng output (pipe, ghi ra file) mà gặp `UnicodeEncodeError` khi in tiếng Việt, đặt biến môi trường `PYTHONUTF8=1`.
