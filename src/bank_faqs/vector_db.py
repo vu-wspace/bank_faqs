@@ -1,3 +1,4 @@
+import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
 import truststore
 import os
 import uuid

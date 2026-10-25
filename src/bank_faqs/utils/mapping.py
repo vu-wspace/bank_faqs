@@ -1,4 +1,4 @@
-from bank_faqs.tools import search_faq, web_search
+from bank_faqs.tools import search_faq, get_interest_rate, web_search
 
 TOOLS = {
     'search_faq': {
@@ -6,15 +6,25 @@ TOOLS = {
         'description': (
             'Tra cứu câu trả lời chăm sóc khách hàng từ dữ liệu nội bộ: thẻ, chuyển tiền, tài khoản, '
             'tiết kiệm, vay, lừa đảo, ứng dụng ngân hàng. Dùng cho câu hỏi về thủ tục và cách xử lý sự cố. '
-            'Không dùng để tra lãi suất hoặc tin tức mới nhất (dùng web_search).'
+            'Không dùng để tra lãi suất (dùng get_interest_rate) hoặc tin tức mới nhất (dùng web_search).'
         ),
         'args': {'query': 'string - câu hỏi của khách hàng'},
+    },
+    'get_interest_rate': {
+        'func': get_interest_rate,
+        'description': (
+            'Tra lãi suất tiết kiệm (%/năm) theo kỳ hạn 1-36 tháng, online và tại quầy, của các ngân hàng tại Quy Nhơn. '
+            'Để trống bank để lấy bảng lãi suất online của tất cả ngân hàng (khi cần so sánh). '
+            'Luôn dùng trước web_search cho câu hỏi lãi suất tiết kiệm.'
+        ),
+        'args': {'bank': 'string - tên ngân hàng (vd: BIDV, Vietcombank), có thể để trống'},
     },
     'web_search': {
         'func': web_search,
         'description': (
-            'Tìm kiếm thông tin mới nhất trên web: lãi suất hiện hành, khuyến mãi, tin tức ngân hàng. '
-            'Chỉ dùng khi search_faq không có câu trả lời hoặc khi cần số liệu cập nhật. '
+            'Tìm kiếm thông tin mới nhất trên web: khuyến mãi, tin tức ngân hàng, lãi suất vay, '
+            'lãi suất của ngân hàng không có trong get_interest_rate. '
+            'Chỉ dùng khi search_faq và get_interest_rate không có câu trả lời. '
             'Không dùng cho câu hỏi thủ tục, xử lý sự cố (dùng search_faq).'
         ),
         'args': {'query': 'string - từ khóa tìm kiếm'},
@@ -22,7 +32,7 @@ TOOLS = {
 }
 
 AGENT_TOOLS = {
-    'agent_main': ['search_faq', 'web_search'],
+    'agent_main': ['search_faq', 'get_interest_rate', 'web_search'],
 }
 
 def get_tool(name: str):

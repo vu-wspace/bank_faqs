@@ -1,3 +1,4 @@
+import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
 import truststore
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
@@ -12,7 +13,8 @@ groq_llm = ChatGroq(
     model='qwen/qwen3.8-27b',
     temperature=0,
     timeout=60,
-    max_retries=3
+    max_retries=3,
+    reasoning_format='hidden'
 )
 
 agent = create_agent(
