@@ -1,0 +1,36 @@
+# LangChain / LangGraph
+langchain
+langchain-core
+langchain-community
+langgraph
+langgraph-cli[inmem]
+
+# LLM
+langchain-groq
+langchain-openai
+langchain-google-genai
+
+# Tool tìm kiếm
+tavily-python
+langchain-tavily
+
+# Vector DB
+chromadb
+langchain-chroma
+qdrant-client
+langchain-qdrant
+
+# Embedding + xử lý tiếng Việt
+sentence-transformers
+fastembed
+pyvi
+
+# Tiện ích
+python-dotenv
+truststore
+colorama
+pandas
+numpy
+
+# Phát triển
+ipykernel
