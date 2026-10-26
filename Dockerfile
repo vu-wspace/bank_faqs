@@ -9,6 +9,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# CA nội bộ cho mạng có SSL inspection (proxy công ty cấp lại chứng chỉ HTTPS): đặt file *.crt vào certs/.
+# Thư mục rỗng thì bước này không làm gì.
+COPY certs/ /usr/local/share/ca-certificates/
+RUN update-ca-certificates
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+
 # uv chỉ mount lúc build, không nằm trong image
 # Cài thư viện trước (layer cache: chỉ cài lại khi pyproject/uv.lock đổi)
 COPY pyproject.toml uv.lock README.md ./

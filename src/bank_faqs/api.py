@@ -10,6 +10,7 @@ from pathlib import Path
 import groq
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
+from langchain_core.exceptions import ModelError, ModelRateLimitError
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
@@ -29,6 +30,17 @@ class ChatResponse(BaseModel):
     thread_id: str
     answer: str
     tools: list[str]
+
+def is_rate_limited(e: Exception) -> bool:
+    # Gemini (langchain-google-genai) ném ModelRateLimitError chung của langchain_core.
+    # Groq ném lỗi riêng: 429, hoặc 413 "Request too large" kèm code rate_limit_exceeded.
+    if isinstance(e, (ModelRateLimitError, groq.RateLimitError)):
+        return True
+    if not isinstance(e, groq.APIError):
+        return False
+    body = e.body if isinstance(e.body, dict) else {}
+    err = body.get('error')
+    return (err if isinstance(err, dict) else body).get('code') == 'rate_limit_exceeded'
 
 def prepare_vector_db(retries: int = 30, delay: float = 2.0) -> int:
     # Qdrant có thể khởi động chậm hơn API khi chạy bằng docker compose -> thử lại vài lần
@@ -78,9 +90,11 @@ def chat(req: ChatRequest, request: Request):
     n_before = len(agent.get_state(config).values.get('messages', []))
     try:
         res = agent.invoke({'messages': [{'role': 'user', 'content': req.message}]}, config)
-    except groq.RateLimitError:
-        raise HTTPException(429, 'Hệ thống đang quá tải, anh/chị vui lòng thử lại sau ít phút.')
-    except (groq.APIError, GraphRecursionError) as e:
+    except (groq.APIError, ModelError, GraphRecursionError) as e:
+        if is_rate_limited(e):
+            # Ghi lại loại giới hạn (token/phút, token/ngày...) để biết chờ hay phải nâng gói
+            log.warning('LLM rate limit: %s', e)
+            raise HTTPException(429, 'Hệ thống đang quá tải, anh/chị vui lòng thử lại sau ít phút.')
         log.exception('Lỗi khi chạy agent')
         raise HTTPException(502, f'Không tạo được câu trả lời ({type(e).__name__}).')
 

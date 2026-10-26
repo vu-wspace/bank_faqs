@@ -5,7 +5,7 @@ Agent chăm sóc khách hàng ngân hàng bằng tiếng Việt, xây dựng v�
 ## Cách hoạt động
 
 ```
-Khách hỏi ──> Agent (Groq · qwen/qwen3.8-27b)
+Khách hỏi ──> Agent (Gemini · gemini-3.1-flash-lite)
                  │
                  ├── search_faq         Tìm hội thoại CSKH tương tự trong Qdrant (thủ tục, xử lý sự cố)
                  ├── get_interest_rate  Tra bảng lãi suất tiết kiệm từ file CSV
@@ -32,7 +32,7 @@ bank_faqs/
 │   └── chi_nhanh_ngan_hang_quy_nhon.csv    # Chi nhánh ngân hàng tại Quy Nhơn (chưa dùng)
 ├── src/bank_faqs/
 │   ├── __init__.py               # Fix lỗi DLL của torch trên Windows
-│   ├── llm.py                    # Cấu hình ChatGroq dùng chung
+│   ├── llm.py                    # Cấu hình LLM dùng chung: google_llm (Gemini), groq_llm (Groq)
 │   ├── bank_agent.py             # Agent dựng bằng create_agent (LangChain), chạy thử 4 câu hỏi mẫu
 │   ├── bank_graph.py             # Cùng agent đó nhưng tự dựng bằng StateGraph (LangGraph)
 │   ├── tools.py                  # search_faq, get_interest_rate, web_search
@@ -42,8 +42,10 @@ bank_faqs/
 │   └── utils/
 │       ├── agent_prompts.py      # System prompt của từng agent
 │       ├── mapping.py            # Đăng ký tool và gán tool cho agent
+│       ├── history.py            # Cắt bớt lịch sử hội thoại trước khi gửi model
 │       └── get_conversation_by_id.py  # Gộp các lượt hội thoại theo id
-├── tests/                        # pytest: tool lãi suất, xử lý lỗi, API
+├── tests/                        # pytest: tool lãi suất, xử lý lỗi, lịch sử, API
+├── certs/                        # CA nội bộ (*.crt) cho mạng có SSL inspection, không commit
 ├── Dockerfile                    # Image cho web app
 ├── docker-compose.yml            # Qdrant + web app
 ├── langgraph.json                # Cấu hình cho `langgraph dev`
@@ -54,7 +56,7 @@ bank_faqs/
 
 - Python 3.12.15 và [uv](https://docs.astral.sh/uv/)
 - Docker (để chạy Qdrant và web app)
-- API key: [Groq](https://console.groq.com), [Tavily](https://tavily.com); LangSmith (tùy chọn, để trace)
+- API key: [Google AI Studio](https://aistudio.google.com/apikey) (Gemini), [Groq](https://console.groq.com), [Tavily](https://tavily.com); LangSmith (tùy chọn, để trace)
 
 ## Cài đặt
 
@@ -65,6 +67,7 @@ uv sync
 Tạo file `.env` ở thư mục gốc (đã có trong `.gitignore`):
 
 ```env
+GOOGLE_API_KEY=...
 GROQ_API_KEY=...
 TAVILY_API_KEY=...
 QDRANT_URL=http://localhost:6333
@@ -120,13 +123,24 @@ Gửi lại `thread_id` ở các lượt sau để agent nhớ ngữ cảnh. Ví
 | Mã lỗi | Khi nào |
 |---|---|
 | 422 | `message` rỗng hoặc dài quá 1000 ký tự |
-| 429 | Groq báo vượt giới hạn (xem [Giới hạn của Groq](#giới-hạn-của-groq-gói-free)) |
-| 502 | Groq lỗi khác |
+| 429 | Gemini/Groq báo vượt giới hạn (theo phút hoặc theo ngày) (xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free)) |
+| 502 | Gemini/Groq lỗi khác |
 | 503 | `/health`: không kết nối được Qdrant |
 
 ```bash
 curl http://localhost:8000/chat -H 'Content-Type: application/json' \
   -d '{"message": "lãi suất 12 tháng BIDV"}'
+```
+
+### Mạng công ty có SSL inspection
+
+Nếu log báo `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain` (ví dụ khi gửi trace lên LangSmith), nghĩa là proxy của công ty đang cấp lại chứng chỉ HTTPS bằng CA nội bộ. Máy Windows đã tin CA này, nhưng container thì không. Cách xử lý: xuất CA từ kho chứng chỉ Windows vào thư mục `certs/` rồi build lại image. Dockerfile sẽ cài mọi file `certs/*.crt` vào container. Các file `.crt` này không được commit.
+
+```powershell
+# PowerShell: đổi 'CN=ten-CA*' thành tên CA của công ty (xem issuer của chứng chỉ bị lỗi)
+$c = Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like 'CN=ten-CA*' } | Select-Object -First 1
+"-----BEGIN CERTIFICATE-----`n" + [Convert]::ToBase64String($c.RawData, 'InsertLineBreaks') + "`n-----END CERTIFICATE-----" | Set-Content -Encoding ascii certs\company-ca.crt
+docker compose up -d --build api
 ```
 
 **Giới hạn:** lịch sử hội thoại lưu trong RAM của container (`InMemorySaver`), nên mất khi restart. Vì vậy uvicorn chỉ chạy 1 worker. Muốn chạy nhiều worker hoặc nhiều container thì phải đổi sang checkpointer dùng chung, ví dụ Postgres (`langgraph-checkpoint-postgres`).
@@ -197,14 +211,30 @@ uv run uvicorn bank_faqs.api:app --port 8000
 uv run pytest
 ```
 
-Gồm 34 test, chạy khoảng 1 phút và không gọi Groq hay Tavily thật:
+Gồm 39 test, chạy khoảng 1 phút và không gọi Groq hay Tavily thật:
+
+- `tests/test_history.py`: cắt lịch sử đúng ranh giới lượt hỏi, rút gọn kết quả tool cũ, không làm thay đổi state.
 
 - `tests/test_tools.py`: nhận diện tên ngân hàng, dữ liệu lãi suất, tool tự bắt lỗi khi Qdrant hoặc Tavily lỗi.
 - `tests/test_api.py`: các endpoint (dùng agent giả), validate input, mã lỗi 429/502/503, bộ nhớ theo `thread_id`, tự nạp dữ liệu và thử lại khi Qdrant chưa sẵn sàng.
 
-## Giới hạn của Groq (gói free)
+## Giới hạn của LLM (gói free)
 
-Model `qwen/qwen3.8-27b` ở gói free bị giới hạn 1000 token đầu ra mỗi phút. `llm.py` đặt `max_tokens=512` (câu trả lời thực tế khoảng 15–120 token). Không đặt giá trị này thì mỗi request bị tính 2048 token và trả về lỗi 429. Nếu chạy nhiều câu hỏi liên tục mà vẫn gặp 429, hãy chờ khoảng 1 phút hoặc nâng gói.
+`bank_agent.py` (web app và graph `agent_main`) dùng **Gemini** (`google_llm`); `bank_graph.py` vẫn dùng **Groq** (`groq_llm`). Đổi model bằng cách sửa `llm.py` hoặc tham số `model=` trong `build_agent`.
+
+**Gemini:** giới hạn tính **theo số request mỗi phút cho từng model**. Ví dụ `gemini-3.5-flash` ở gói free chỉ được 5 request/phút, mà mỗi câu hỏi tốn ít nhất 2 request (gọi tool rồi trả lời), nên chỉ được khoảng 2 câu/phút. Model `-lite` có quota riêng. Khi vượt giới hạn, API trả về 429 và ghi `LLM rate limit` vào log.
+
+**Groq:**
+
+Model `qwen/qwen3.8-27b` ở gói free có các giới hạn sau, tính chung cho mọi người dùng của cùng một API key:
+
+| Giới hạn | Mức | Cách dự án xử lý |
+|---|---|---|
+| Token đầu ra / phút | 1000 | `llm.py` đặt `max_tokens=512`; câu trả lời thực tế khoảng 15–120 token. Không đặt thì mỗi request bị tính 2048 token, nên luôn lỗi. |
+| Token đầu vào / phút | 7000 | `utils/history.py` cắt bớt lịch sử khi gửi model: chỉ gửi 4 lượt hỏi gần nhất, và rút kết quả tool của các lượt trước còn 300 ký tự. Nhờ vậy mỗi lần gọi chỉ còn khoảng 1100–2800 token. Trước đây, chat vài lượt là vượt 7000 và Groq trả lỗi 413. |
+| Token / ngày | 200.000 | Không xử lý được trong code. Mỗi câu hỏi tốn khoảng 2.500–5.000 token, tức khoảng 50 câu mỗi ngày. Cần nhiều hơn thì nâng gói. |
+
+Khi chạm giới hạn, SDK groq tự chờ rồi thử lại vài lần. Nếu vẫn không được, API trả về **429** và ghi loại giới hạn vào log (`docker compose logs api | grep "rate limit"`). Lịch sử đầy đủ vẫn được giữ trong bộ nhớ; việc cắt bớt chỉ áp dụng cho phần gửi đi model.
 
 ## Các tool
 

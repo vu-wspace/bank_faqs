@@ -3,9 +3,10 @@ import truststore
 from dotenv import load_dotenv
 from langchain.agents import create_agent
 from langgraph.types import Checkpointer
-from bank_faqs.llm import groq_llm
+from bank_faqs.llm import groq_llm, google_llm
 from bank_faqs.utils.mapping import get_agent_tools
 from bank_faqs.utils.agent_prompts import get_system_prompt
+from bank_faqs.utils.history import TrimHistoryMiddleware
 
 truststore.inject_into_ssl()
 load_dotenv()
@@ -14,9 +15,10 @@ def build_agent(checkpointer: Checkpointer = None):
     # checkpointer (vd: InMemorySaver) giúp agent nhớ hội thoại theo thread_id - api.py dùng cách này.
     # Không truyền khi chạy qua `langgraph dev` vì server tự quản lý bộ nhớ.
     return create_agent(
-        model=groq_llm,
+        model=google_llm,
         tools=get_agent_tools('agent_main'),
         system_prompt=get_system_prompt('agent_main'),
+        middleware=[TrimHistoryMiddleware()],
         checkpointer=checkpointer,
     )
 

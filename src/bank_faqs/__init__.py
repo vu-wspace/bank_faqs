@@ -6,5 +6,11 @@ if sys.platform == 'win32':
     import ctypes
     ctypes.WinDLL('msvcp140.dll')
 
+# Dùng kho chứng chỉ của hệ điều hành (mạng công ty có SSL inspection, vd với Gemini, LangSmith).
+# Phải chạy trước khi tạo client LLM: các SDK (google-genai, groq...) tạo SSL context ngay lúc khởi tạo.
+# Đặt sau đoạn fix DLL ở trên vì import truststore sẽ gọi module platform.
+import truststore  # noqa: E402
+truststore.inject_into_ssl()
+
 def main() -> None:
     print("Hello from bank-faqs!")

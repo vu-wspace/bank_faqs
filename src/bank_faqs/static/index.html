@@ -52,10 +52,26 @@
   const send = document.getElementById('send');
   let threadId = null;
 
+  // Model trả lời bằng markdown: hiển thị **in đậm**, bỏ dấu # của tiêu đề. Chỉ tạo text node -> không bị chèn HTML.
+  function renderMarkdown(div, text) {
+    text = text.replace(/^#{1,6}\s+/gm, '');
+    text.split(/\*\*(.+?)\*\*/g).forEach((part, i) => {
+      if (!part) return;
+      if (i % 2) {
+        const b = document.createElement('strong');
+        b.textContent = part;
+        div.appendChild(b);
+      } else {
+        div.appendChild(document.createTextNode(part));
+      }
+    });
+  }
+
   function add(text, cls, tools) {
     const div = document.createElement('div');
     div.className = 'msg ' + (cls || '');
-    div.textContent = text;
+    if (cls) div.textContent = text;  // tin của khách và lỗi: giữ nguyên chữ
+    else renderMarkdown(div, text);
     if (tools && tools.length) {
       const t = document.createElement('span');
       t.className = 'tools';

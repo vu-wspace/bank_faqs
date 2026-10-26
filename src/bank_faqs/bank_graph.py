@@ -7,6 +7,7 @@ from langgraph.graph.message import add_messages
 from bank_faqs.llm import groq_llm
 from bank_faqs.utils.mapping import get_agent_tools
 from bank_faqs.utils.agent_prompts import get_system_prompt
+from bank_faqs.utils.history import trim_history
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import tools_condition, ToolNode
 
@@ -24,7 +25,7 @@ class State(TypedDict):
 
 # Nodes
 def call_model(state: State) -> dict:
-    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state['messages']
+    messages = [SystemMessage(content=SYSTEM_PROMPT)] + trim_history(state['messages'])
     response = llm_with_tools.invoke(messages)
     return {'messages': [response]}
 

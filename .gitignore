@@ -11,5 +11,8 @@ qdrant_storage/
 # Secrets
 .env
 
+# CA nội bộ của mạng công ty (xem README: SSL inspection)
+certs/*.crt
+
 # Virtual environments
 .venv
