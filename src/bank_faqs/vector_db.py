@@ -3,6 +3,7 @@ import truststore
 import os
 import uuid
 import pandas as pd
+from functools import lru_cache
 from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -35,6 +36,11 @@ class BkaiEmbeddings(Embeddings):
     def embed_query(self, text):
         return self._enc([text])[0]
 
+@lru_cache
+def get_embeddings() -> BkaiEmbeddings:
+    # Model ~540MB: chỉ nạp 1 lần dù có nhiều vector store
+    return BkaiEmbeddings()
+
 def get_vector_store(emb: Embeddings | None = None) -> QdrantVectorStore:
     client = QdrantClient(url=QDRANT_URL)
     if not client.collection_exists(COLLECTION):
@@ -42,7 +48,10 @@ def get_vector_store(emb: Embeddings | None = None) -> QdrantVectorStore:
             COLLECTION,
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
-    return QdrantVectorStore(client=client, collection_name=COLLECTION, embedding=emb or BkaiEmbeddings())
+    return QdrantVectorStore(client=client, collection_name=COLLECTION, embedding=emb or get_embeddings())
+
+def count_documents(db: QdrantVectorStore) -> int:
+    return db.client.count(COLLECTION).count
 
 def ingest(db: QdrantVectorStore) -> int:
     df = pd.read_csv(OUTPUT_FILE, encoding='utf-8-sig')

@@ -70,7 +70,12 @@ def search_faq(query: str) -> str:
     """Tra cứu câu trả lời chăm sóc khách hàng từ dữ liệu nội bộ: thẻ, chuyển tiền, tài khoản, 
     tiết kiệm, vay, lừa đảo, ứng dụng ngân hàng. Dùng cho câu hỏi về thủ tục và cách xử lý sự cố. 
     Không dùng để tra lãi suất (dùng get_interest_rate) hoặc tin tức mới nhất (dùng web_search)."""
-    hits = _retriever().invoke(query)
+    try:
+        hits = _retriever().invoke(query)
+    except Exception as e:
+        # ToolNode chỉ bắt lỗi sai tham số; lỗi khác (Qdrant sập...) sẽ làm hỏng cả lượt hội thoại
+        return (f'Lỗi hệ thống khi tra cứu dữ liệu nội bộ ({type(e).__name__}). '
+                'Không tự đưa ra hướng dẫn; xin lỗi anh/chị và đề nghị liên hệ tổng đài hoặc chi nhánh.')
     if not hits:
         return 'Không tìm thấy câu trả lời trong dữ liệu nội bộ.'
     return '\n\n'.join(
@@ -102,12 +107,16 @@ def get_interest_rate(bank: str = '') -> str:
     return '\n\n'.join(out)
 
 @tool
-def web_search(query: str) -> Dict[str, Any]:
+def web_search(query: str) -> Dict[str, Any] | str:
     """Tìm kiếm thông tin mới nhất trên web: khuyến mãi, tin tức ngân hàng, lãi suất vay,
     lãi suất của ngân hàng không có trong get_interest_rate.
     Chỉ dùng khi search_faq và get_interest_rate không có câu trả lời.
     Không dùng cho câu hỏi thủ tục, xử lý sự cố (dùng search_faq)."""
-    return tavily_client.search(query, max_results=3, timeout=30)
+    try:
+        return tavily_client.search(query, max_results=3, timeout=30)
+    except Exception as e:
+        return (f'Lỗi hệ thống khi tìm kiếm trên web ({type(e).__name__}). '
+                'Không tự đưa ra số liệu; xin lỗi anh/chị và đề nghị xem trên ứng dụng hoặc liên hệ chi nhánh.')
 
 def main():
     res = tavily_client.search('Lãi suất tiết kiệm Vietcombank hôm nay là bao nhiêu?', max_results=3)

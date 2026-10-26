@@ -8,3 +8,17 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage   # dữ liệu lưu ra ổ đĩa, tắt container không mất
     restart: unless-stopped
+
+  api:
+    build: .
+    image: bank-faqs-api
+    container_name: bank_faqs_api
+    ports:
+      - "8000:8000"   # Web chat + API (docs tại /docs)
+    env_file: .env    # GROQ_API_KEY, TAVILY_API_KEY, LANGSMITH_*
+    environment:
+      QDRANT_URL: http://qdrant:6333   # ghi đè QDRANT_URL=localhost trong .env
+      AUTO_INGEST: "true"              # collection rỗng thì tự nạp dữ liệu khi khởi động
+    depends_on:
+      - qdrant
+    restart: unless-stopped

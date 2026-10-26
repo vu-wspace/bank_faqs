@@ -1,12 +1,12 @@
+import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
 import truststore
 from dotenv import load_dotenv
 from typing import Annotated, TypedDict
-from langchain_core.messages import AnyMessage
+from langchain_core.messages import AnyMessage, SystemMessage
 from langgraph.graph.message import add_messages
-from langchain_groq import ChatGroq
+from bank_faqs.llm import groq_llm
 from bank_faqs.utils.mapping import get_agent_tools
 from bank_faqs.utils.agent_prompts import get_system_prompt
-from langchain_core.messages import SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import tools_condition, ToolNode
 
@@ -15,14 +15,6 @@ load_dotenv()
 
 TOOLS = get_agent_tools('agent_main')
 SYSTEM_PROMPT = get_system_prompt('agent_main')
-
-groq_llm = ChatGroq(
-    model='qwen/qwen3.8-27b',
-    temperature=0,
-    timeout=60,
-    max_retries=3,
-    reasoning_format='hidden'
-)
 
 llm_with_tools = groq_llm.bind_tools(TOOLS, parallel_tool_calls=False)
 

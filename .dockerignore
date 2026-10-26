@@ -1,0 +1,10 @@
+.venv
+.git
+.env
+.langgraph_api
+qdrant_storage
+**/__pycache__
+*.py[oc]
+*.ipynb
+.pytest_cache
+tests

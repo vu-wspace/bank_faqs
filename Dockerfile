@@ -1,0 +1,40 @@
+FROM python:3.12.15-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    HF_HOME=/app/.cache/huggingface \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+
+# uv chỉ mount lúc build, không nằm trong image
+# Cài thư viện trước (layer cache: chỉ cài lại khi pyproject/uv.lock đổi)
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=from=ghcr.io/astral-sh/uv:0.12.23,source=/uv,target=/bin/uv \
+    --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project
+
+COPY src ./src
+COPY dataset ./dataset
+RUN --mount=from=ghcr.io/astral-sh/uv:0.12.23,source=/uv,target=/bin/uv \
+    --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev
+
+# Tải sẵn model embedding vào image để container khởi động không cần mạng tới Hugging Face
+RUN python -c "from bank_faqs.vector_db import MODEL_NAME; \
+from sentence_transformers import SentenceTransformer; SentenceTransformer(MODEL_NAME)"
+ENV HF_HUB_OFFLINE=1
+
+# Chạy bằng user thường. Không chown -R /app: lệnh đó nhân đôi ~2.5GB venv + model thành layer mới,
+# mà app chỉ cần quyền đọc
+RUN useradd --create-home --uid 1000 app
+USER app
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"
+
+# 1 worker: lịch sử hội thoại (InMemorySaver) nằm trong RAM của process
+CMD ["uvicorn", "bank_faqs.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

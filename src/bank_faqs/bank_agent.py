@@ -1,42 +1,35 @@
 import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
 import truststore
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
 from langchain.agents import create_agent
+from langgraph.types import Checkpointer
+from bank_faqs.llm import groq_llm
 from bank_faqs.utils.mapping import get_agent_tools
 from bank_faqs.utils.agent_prompts import get_system_prompt
-# from langgraph.checkpoint.memory import MemorySaver
 
 truststore.inject_into_ssl()
 load_dotenv()
 
-# memory = MemorySaver()
-# config = {'configurable': {'thread_id': 1}}
+def build_agent(checkpointer: Checkpointer = None):
+    # checkpointer (vd: InMemorySaver) giúp agent nhớ hội thoại theo thread_id - api.py dùng cách này.
+    # Không truyền khi chạy qua `langgraph dev` vì server tự quản lý bộ nhớ.
+    return create_agent(
+        model=groq_llm,
+        tools=get_agent_tools('agent_main'),
+        system_prompt=get_system_prompt('agent_main'),
+        checkpointer=checkpointer,
+    )
 
-groq_llm = ChatGroq(
-    model='qwen/qwen3.8-27b',
-    temperature=0,
-    timeout=60,
-    max_retries=3,
-    reasoning_format='hidden'
-)
-
-agent = create_agent(
-    model=groq_llm,
-    tools=get_agent_tools('agent_main'),
-    system_prompt=get_system_prompt('agent_main'),
-    # checkpointer = memory
-)
+agent = build_agent()
 
 if __name__ == "__main__":
     tests = [
         'quên mk app rồi, lấy lại sao vậy',             # nên gọi search_faq
-        'lãi suất gửi 12 tháng ở BIDV bao nhiêu',       # nên gọi web_search
+        'lãi suất gửi 12 tháng ở BIDV bao nhiêu',       # nên gọi get_interest_rate
         'em lỡ đưa otp cho người ta, mất hết tiền rồi', # nên báo chuyển nhân viên
         'nên mua vàng hay cổ phiếu',                    # nên từ chối
     ]
     for q in tests:
         res = agent.invoke({'messages': [{'role': 'user', 'content': q}]})
-        # res = agent.invoke({'messages': [{'role': 'user', 'content': q}]}, config)
         called = [tc['name'] for m in res['messages'] for tc in (getattr(m, 'tool_calls', None) or [])]
         print(f"\nKhách: {q}\nTool đã gọi: {called}\nTrả lời: {res['messages'][-1].text}")

@@ -32,14 +32,20 @@ bank_faqs/
 │   └── chi_nhanh_ngan_hang_quy_nhon.csv    # Chi nhánh ngân hàng tại Quy Nhơn (chưa dùng)
 ├── src/bank_faqs/
 │   ├── __init__.py               # Fix lỗi DLL của torch trên Windows
-│   ├── bank_agent.py             # Khởi tạo LLM + agent, chạy thử 4 câu hỏi mẫu
+│   ├── llm.py                    # Cấu hình ChatGroq dùng chung
+│   ├── bank_agent.py             # Agent dựng bằng create_agent (LangChain), chạy thử 4 câu hỏi mẫu
+│   ├── bank_graph.py             # Cùng agent đó nhưng tự dựng bằng StateGraph (LangGraph)
 │   ├── tools.py                  # search_faq, get_interest_rate, web_search
 │   ├── vector_db.py              # Embedding bkai + Qdrant, nạp dữ liệu
+│   ├── api.py                    # Web app FastAPI: trang chat + POST /chat
+│   ├── static/index.html         # Giao diện chat
 │   └── utils/
 │       ├── agent_prompts.py      # System prompt của từng agent
 │       ├── mapping.py            # Đăng ký tool và gán tool cho agent
 │       └── get_conversation_by_id.py  # Gộp các lượt hội thoại theo id
-├── docker-compose.yml            # Qdrant
+├── tests/                        # pytest: tool lãi suất, xử lý lỗi, API
+├── Dockerfile                    # Image cho web app
+├── docker-compose.yml            # Qdrant + web app
 ├── langgraph.json                # Cấu hình cho `langgraph dev`
 └── pyproject.toml
 ```
@@ -47,7 +53,7 @@ bank_faqs/
 ## Yêu cầu
 
 - Python 3.12.15 và [uv](https://docs.astral.sh/uv/)
-- Docker (để chạy Qdrant)
+- Docker (để chạy Qdrant và web app)
 - API key: [Groq](https://console.groq.com), [Tavily](https://tavily.com); LangSmith (tùy chọn, để trace)
 
 ## Cài đặt
@@ -69,12 +75,68 @@ LANGSMITH_TRACING=true
 LANGSMITH_PROJECT=bank-faqs
 ```
 
-## Chạy
+## Deploy bằng Docker (web app)
+
+Cách nhanh nhất để chạy cả hệ thống, chỉ cần Docker và file `.env`:
+
+```bash
+docker compose up -d --build
+```
+
+Lệnh này chạy 2 container:
+
+| Container | Cổng | Vai trò |
+|---|---|---|
+| `qdrant` | 6333, 6334 | Vector DB, dữ liệu lưu ở `qdrant_storage/` |
+| `bank_faqs_api` | 8000 | Web app FastAPI (uvicorn) |
+
+Khi khởi động, API chờ Qdrant sẵn sàng (thử lại tối đa ~60 giây). Nếu collection còn rỗng, API **tự nạp dữ liệu** từ `dataset/cskh_gop_theo_id.csv`; đặt `AUTO_INGEST: "false"` trong `docker-compose.yml` để tắt. Model embedding được tải sẵn vào image lúc build, nên container không cần tải lại khi chạy. Lần build đầu mất vài phút.
+
+Sau khi chạy:
+
+- **Trang chat:** http://localhost:8000
+- **Tài liệu API (Swagger):** http://localhost:8000/docs
+- **Kiểm tra trạng thái:** http://localhost:8000/health trả về `{"status": "ok", "documents": 34}`
+
+```bash
+docker compose logs -f api     # xem log
+docker compose down            # dừng (dữ liệu Qdrant vẫn giữ)
+```
+
+### API
+
+`POST /chat`
+
+```json
+// request: bỏ trống thread_id để bắt đầu hội thoại mới
+{"message": "lãi suất 12 tháng BIDV", "thread_id": null}
+
+// response
+{"thread_id": "5f0c…", "answer": "Lãi suất tiết kiệm BIDV kỳ hạn 12 tháng…", "tools": ["get_interest_rate"]}
+```
+
+Gửi lại `thread_id` ở các lượt sau để agent nhớ ngữ cảnh. Ví dụ: hỏi "lãi suất BIDV" rồi hỏi tiếp "còn Vietcombank thì sao". `tools` chỉ liệt kê các tool được gọi trong lượt đó.
+
+| Mã lỗi | Khi nào |
+|---|---|
+| 422 | `message` rỗng hoặc dài quá 1000 ký tự |
+| 429 | Groq báo vượt giới hạn (xem [Giới hạn của Groq](#giới-hạn-của-groq-gói-free)) |
+| 502 | Groq lỗi khác |
+| 503 | `/health`: không kết nối được Qdrant |
+
+```bash
+curl http://localhost:8000/chat -H 'Content-Type: application/json' \
+  -d '{"message": "lãi suất 12 tháng BIDV"}'
+```
+
+**Giới hạn:** lịch sử hội thoại lưu trong RAM của container (`InMemorySaver`), nên mất khi restart. Vì vậy uvicorn chỉ chạy 1 worker. Muốn chạy nhiều worker hoặc nhiều container thì phải đổi sang checkpointer dùng chung, ví dụ Postgres (`langgraph-checkpoint-postgres`).
+
+## Chạy trên máy (không Docker)
 
 **1. Khởi động Qdrant**
 
 ```bash
-docker compose up -d
+docker compose up -d qdrant
 ```
 
 Dashboard tại http://localhost:6333/dashboard. Dữ liệu lưu trong `qdrant_storage/`.
@@ -114,7 +176,7 @@ print(res['messages'][-1].text)
 uv run langgraph dev
 ```
 
-Server chạy tại http://127.0.0.1:2024 với graph `agent_main` (khai báo trong `langgraph.json`). Có thể chat và xem từng bước gọi tool trên LangGraph Studio (link in ra khi khởi động), hoặc gọi qua API:
+Server chạy tại http://127.0.0.1:2024 với 2 graph khai báo trong `langgraph.json`: `agent_main` (`bank_agent.py`) và `bank_graph` (`bank_graph.py`). Hai graph dùng chung LLM, tool và system prompt, chỉ khác cách dựng. Có thể chat và xem từng bước gọi tool trên LangGraph Studio (link in ra khi khởi động), hoặc gọi qua API:
 
 ```bash
 curl http://127.0.0.1:2024/runs/wait -H 'Content-Type: application/json' \
@@ -123,6 +185,27 @@ curl http://127.0.0.1:2024/runs/wait -H 'Content-Type: application/json' \
 
 Trên Windows, cần làm bước trong mục [Lưu ý trên Windows](#lưu-ý-trên-windows) trước.
 
+**5. Web app (không Docker)**
+
+```bash
+uv run uvicorn bank_faqs.api:app --port 8000
+```
+
+## Test
+
+```bash
+uv run pytest
+```
+
+Gồm 34 test, chạy khoảng 1 phút và không gọi Groq hay Tavily thật:
+
+- `tests/test_tools.py`: nhận diện tên ngân hàng, dữ liệu lãi suất, tool tự bắt lỗi khi Qdrant hoặc Tavily lỗi.
+- `tests/test_api.py`: các endpoint (dùng agent giả), validate input, mã lỗi 429/502/503, bộ nhớ theo `thread_id`, tự nạp dữ liệu và thử lại khi Qdrant chưa sẵn sàng.
+
+## Giới hạn của Groq (gói free)
+
+Model `qwen/qwen3.8-27b` ở gói free bị giới hạn 1000 token đầu ra mỗi phút. `llm.py` đặt `max_tokens=512` (câu trả lời thực tế khoảng 15–120 token). Không đặt giá trị này thì mỗi request bị tính 2048 token và trả về lỗi 429. Nếu chạy nhiều câu hỏi liên tục mà vẫn gặp 429, hãy chờ khoảng 1 phút hoặc nâng gói.
+
 ## Các tool
 
 | Tool | Nguồn dữ liệu | Dùng khi |
@@ -130,6 +213,8 @@ Trên Windows, cần làm bước trong mục [Lưu ý trên Windows](#lưu-ý-t
 | `search_faq(query)` | Qdrant, top 3 hội thoại tương tự | Thủ tục, xử lý sự cố |
 | `get_interest_rate(bank='')` | `lai_suat_ngan_hang_23-10-2026.csv` | Lãi suất tiết kiệm online/tại quầy, kỳ hạn 1–36 tháng. Để trống `bank` để lấy bảng so sánh mọi ngân hàng |
 | `web_search(query)` | Tavily, 3 kết quả | Khuyến mãi, tin tức, lãi suất vay, ngân hàng không có trong CSV |
+
+`search_faq` và `web_search` tự bắt lỗi (Qdrant sập, Tavily timeout…) và trả thông báo lỗi cho model, thay vì làm hỏng cả lượt hội thoại.
 
 `get_interest_rate` nhận tên ngân hàng không dấu, viết tắt hoặc có tiền tố "ngân hàng" (`vcb`, `Vietin`, `mb bank`, `bac a`, `ngân hàng Techcom`…). Danh sách tên tắt nằm trong `BANK_ALIASES` ở `tools.py`.
 
@@ -151,6 +236,6 @@ uv run python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[-1],
 
 Kiểm tra: `uv run python -c "import pandas, torch"` không báo lỗi là được.
 
-Dự phòng khi chưa có file `.pth`: `src/bank_faqs/__init__.py` cũng nạp trước `msvcp140.dll`, và các file chạy được (`vector_db.py`, `tools.py`, `bank_agent.py`) đều có `import bank_faqs` ở **dòng đầu tiên**, nên `python -m ...` vẫn chạy được. Tuy vậy, chỉ cách này thì không đủ cho `langgraph dev`, vì server import `pandas` trước khi nạp code của dự án.
+Dự phòng khi chưa có file `.pth`: `src/bank_faqs/__init__.py` cũng nạp trước `msvcp140.dll`, và các file chạy được (`vector_db.py`, `tools.py`, `bank_agent.py`, `bank_graph.py`) đều có `import bank_faqs` ở **dòng đầu tiên**, nên `python -m ...` vẫn chạy được. Tuy vậy, chỉ cách này thì không đủ cho `langgraph dev`, vì server import `pandas` trước khi nạp code của dự án.
 
 Nếu chuyển hướng output (pipe, ghi ra file) mà gặp `UnicodeEncodeError` khi in tiếng Việt, đặt biến môi trường `PYTHONUTF8=1`.
