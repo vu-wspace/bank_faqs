@@ -35,6 +35,5 @@ AGENT_PROMPTS = {
     },
 }
 
-
 def get_system_prompt(agent: str) -> str:
     return AGENT_PROMPTS[agent]['system_instruction']
