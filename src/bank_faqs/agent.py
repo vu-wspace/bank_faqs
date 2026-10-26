@@ -1,15 +1,10 @@
-import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
-import truststore
-from dotenv import load_dotenv
+import bank_faqs  # noqa: F401 - phải import đầu tiên khi chạy file trực tiếp (xem __init__.py)
 from langchain.agents import create_agent
 from langgraph.types import Checkpointer
-from bank_faqs.llm import groq_llm, google_llm
-from bank_faqs.utils.mapping import get_agent_tools
-from bank_faqs.utils.agent_prompts import get_system_prompt
-from bank_faqs.utils.history import TrimHistoryMiddleware
-
-truststore.inject_into_ssl()
-load_dotenv()
+from bank_faqs.history import TrimHistoryMiddleware
+from bank_faqs.llm import google_llm
+from bank_faqs.prompts import get_system_prompt
+from bank_faqs.tools import get_agent_tools
 
 def build_agent(checkpointer: Checkpointer = None):
     # checkpointer (vd: InMemorySaver) giúp agent nhớ hội thoại theo thread_id - api.py dùng cách này.

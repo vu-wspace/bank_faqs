@@ -1,7 +1,5 @@
-import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
 import asyncio
 import logging
-import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -15,12 +13,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
 from pydantic import BaseModel, Field
 
-from bank_faqs.bank_agent import build_agent
+from bank_faqs.agent import build_agent
+from bank_faqs.config import AUTO_INGEST
 from bank_faqs.vector_db import count_documents, get_vector_store, ingest
 
 log = logging.getLogger('uvicorn.error')
 STATIC = Path(__file__).parent / 'static'
-AUTO_INGEST = os.getenv('AUTO_INGEST', 'true').lower() == 'true'
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=1000)
@@ -46,8 +44,8 @@ def prepare_vector_db(retries: int = 30, delay: float = 2.0) -> int:
     # Qdrant có thể khởi động chậm hơn API khi chạy bằng docker compose -> thử lại vài lần
     for attempt in range(1, retries + 1):
         try:
-            db = get_vector_store()
-            n = count_documents(db)
+            db = get_vector_store()  # tạo collection nếu chưa có
+            n = count_documents()
             if n == 0 and AUTO_INGEST:
                 log.info('Collection rỗng, đang nạp dữ liệu...')
                 n = ingest(db)
@@ -76,7 +74,7 @@ def index():
 @app.get('/health')
 def health():
     try:
-        return {'status': 'ok', 'documents': count_documents(get_vector_store())}
+        return {'status': 'ok', 'documents': count_documents()}
     except Exception as e:
         raise HTTPException(503, f'Qdrant không sẵn sàng: {type(e).__name__}')
 

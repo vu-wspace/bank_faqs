@@ -1,10 +1,12 @@
+# Chỉ cần: pyproject.toml, uv.lock, README.md, certs/, src/, data/ (trừ unused)
 .venv
 .git
 .env
 .langgraph_api
-qdrant_storage
+.pytest_cache
+.ruff_cache
 **/__pycache__
 *.py[oc]
 *.ipynb
-.pytest_cache
 tests
+data/unused

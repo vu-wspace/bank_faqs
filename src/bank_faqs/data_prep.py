@@ -1,13 +1,9 @@
+# Gộp các lượt nói của từng hội thoại CSKH thành 1 dòng (question/answer) để nạp vào vector DB
 from pathlib import Path
 import pandas as pd
+from bank_faqs.config import CONVERSATIONS_FILE, MERGED_FILE
 
-ROOT = Path(__file__).resolve().parent.parent.parent.parent
-DATASET = ROOT / 'dataset'
-
-INPUT_FILE = DATASET / 'cskh_hoi_thoai_ngan_hang.csv'
-OUTPUT_FILE = DATASET / 'cskh_gop_theo_id.csv'
-
-def load_conversation_data(path: Path = INPUT_FILE) -> pd.DataFrame:
+def load_conversation_data(path: Path = CONVERSATIONS_FILE) -> pd.DataFrame:
     df = pd.read_csv(path, encoding='utf-8-sig')
     return df.sort_values(['hoi_thoai_id', 'luot']).reset_index(drop=True)
 
@@ -32,7 +28,7 @@ def get_conversation_by_id(df: pd.DataFrame, conv_id: str) -> pd.DataFrame:
         raise ValueError(f'Không tìm thấy id hội thoại {conv_id}')
     return conv
 
-def save_csv(df: pd.DataFrame, path: Path = OUTPUT_FILE) -> None:
+def save_csv(df: pd.DataFrame, path: Path = MERGED_FILE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w', encoding='utf-8-sig', newline='') as f:
         df.to_csv(f, index=False)
@@ -43,7 +39,7 @@ def main() -> None:
     save_csv(output)
 
     print(f'Đã gộp {len(df)} lượt -> {len(output)} hội thoại\n')
-    print(f'Lưu tại: {OUTPUT_FILE}')
+    print(f'Lưu tại: {MERGED_FILE}')
     print(output.head())
 
     print('\nVí dụ hội thoại HT001:')

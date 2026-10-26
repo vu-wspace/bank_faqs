@@ -12,5 +12,6 @@ if sys.platform == 'win32':
 import truststore  # noqa: E402
 truststore.inject_into_ssl()
 
-def main() -> None:
-    print("Hello from bank-faqs!")
+# Nạp .env một lần cho cả package, trước khi các module đọc biến môi trường (QDRANT_URL, API key...)
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv()

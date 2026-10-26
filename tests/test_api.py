@@ -111,21 +111,26 @@ def test_chat_upstream_error_returns_502(client):
 
 
 def test_health_ok(client, monkeypatch):
-    monkeypatch.setattr(api, 'get_vector_store', lambda: object())
-    monkeypatch.setattr(api, 'count_documents', lambda db: 34)
+    monkeypatch.setattr(api, 'count_documents', lambda: 34)
     assert client.get('/health').json() == {'status': 'ok', 'documents': 34}
 
 
 def test_health_qdrant_down(client, monkeypatch):
     def boom():
         raise ConnectionError()
-    monkeypatch.setattr(api, 'get_vector_store', boom)
+    monkeypatch.setattr(api, 'count_documents', boom)
     assert client.get('/health').status_code == 503
+
+
+def test_qdrant_client_is_reused():
+    # /health được gọi mỗi 30s: tạo client mới mỗi lần sẽ tích tụ kết nối
+    from bank_faqs.vector_db import get_client
+    assert get_client() is get_client()
 
 
 def test_prepare_vector_db_ingests_when_empty(monkeypatch):
     monkeypatch.setattr(api, 'get_vector_store', lambda: 'db')
-    monkeypatch.setattr(api, 'count_documents', lambda db: 0)
+    monkeypatch.setattr(api, 'count_documents', lambda: 0)
     monkeypatch.setattr(api, 'ingest', lambda db: 34)
     assert api.prepare_vector_db() == 34
 

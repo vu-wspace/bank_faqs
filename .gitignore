@@ -5,8 +5,11 @@ build/
 dist/
 wheels/
 *.egg-info
-qdrant_storage/
+
+# Cache của công cụ
 .langgraph_api/
+.pytest_cache/
+.ruff_cache/
 
 # Secrets
 .env

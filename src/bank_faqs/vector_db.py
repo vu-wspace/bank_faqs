@@ -1,10 +1,7 @@
-import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
-import truststore
-import os
+import bank_faqs  # noqa: F401 - phải import đầu tiên khi chạy file trực tiếp (xem __init__.py)
 import uuid
 import pandas as pd
 from functools import lru_cache
-from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_qdrant import QdrantVectorStore
@@ -12,18 +9,10 @@ from pyvi import ViTokenizer
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from sentence_transformers import SentenceTransformer
-from bank_faqs.utils.get_conversation_by_id import OUTPUT_FILE
-
-truststore.inject_into_ssl()
-load_dotenv()
-
-QDRANT_URL = os.getenv('QDRANT_URL', 'http://localhost:6333')
-COLLECTION = 'cskh_bkai'
-MODEL_NAME = 'bkai-foundation-models/vietnamese-bi-encoder'
-VECTOR_SIZE = 768
+from bank_faqs.config import COLLECTION, EMBEDDING_MODEL, MERGED_FILE, QDRANT_URL, VECTOR_SIZE
 
 class BkaiEmbeddings(Embeddings):
-    def __init__(self, model_name: str = MODEL_NAME):
+    def __init__(self, model_name: str = EMBEDDING_MODEL):
         self.model = SentenceTransformer(model_name)
 
     def _enc(self, texts):
@@ -41,20 +30,26 @@ def get_embeddings() -> BkaiEmbeddings:
     # Model ~540MB: chỉ nạp 1 lần dù có nhiều vector store
     return BkaiEmbeddings()
 
-def get_vector_store(emb: Embeddings | None = None) -> QdrantVectorStore:
-    client = QdrantClient(url=QDRANT_URL)
+@lru_cache
+def get_client() -> QdrantClient:
+    # Dùng chung 1 client: tạo mới mỗi lần (vd mỗi lần healthcheck gọi /health) sẽ tích tụ kết nối không đóng.
+    # Tạo client không kết nối ngay, nên Qdrant khởi động lại thì client vẫn dùng được.
+    return QdrantClient(url=QDRANT_URL)
+
+def get_vector_store() -> QdrantVectorStore:
+    client = get_client()
     if not client.collection_exists(COLLECTION):
         client.create_collection(
             COLLECTION,
             vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
         )
-    return QdrantVectorStore(client=client, collection_name=COLLECTION, embedding=emb or get_embeddings())
+    return QdrantVectorStore(client=client, collection_name=COLLECTION, embedding=get_embeddings())
 
-def count_documents(db: QdrantVectorStore) -> int:
-    return db.client.count(COLLECTION).count
+def count_documents() -> int:
+    return get_client().count(COLLECTION).count
 
 def ingest(db: QdrantVectorStore) -> int:
-    df = pd.read_csv(OUTPUT_FILE, encoding='utf-8-sig')
+    df = pd.read_csv(MERGED_FILE, encoding='utf-8-sig')
     docs = [
         Document(page_content=q, metadata={'answer': a, 'chu_de': c, 'hoi_thoai_id': i})
         for i, q, a, c in zip(df['hoi_thoai_id'], df['question'], df['answer'], df['chu_de'])

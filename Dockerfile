@@ -23,16 +23,17 @@ RUN --mount=from=ghcr.io/astral-sh/uv:0.12.23,source=/uv,target=/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev --no-install-project
 
+# Tải sẵn model embedding vào image để container khởi động không cần mạng tới Hugging Face.
+# Đặt trước COPY src để sửa code không phải tải lại model (~540MB). Phải trùng EMBEDDING_MODEL trong config.py.
+ARG EMBEDDING_MODEL=bkai-foundation-models/vietnamese-bi-encoder
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+ENV HF_HUB_OFFLINE=1
+
 COPY src ./src
-COPY dataset ./dataset
+COPY data ./data
 RUN --mount=from=ghcr.io/astral-sh/uv:0.12.23,source=/uv,target=/bin/uv \
     --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-dev
-
-# Tải sẵn model embedding vào image để container khởi động không cần mạng tới Hugging Face
-RUN python -c "from bank_faqs.vector_db import MODEL_NAME; \
-from sentence_transformers import SentenceTransformer; SentenceTransformer(MODEL_NAME)"
-ENV HF_HUB_OFFLINE=1
 
 # Chạy bằng user thường. Không chown -R /app: lệnh đó nhân đôi ~2.5GB venv + model thành layer mới,
 # mà app chỉ cần quyền đọc

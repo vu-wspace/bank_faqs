@@ -25,6 +25,7 @@
          border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
   .me { align-self: flex-end; background: var(--me); border-color: transparent; }
   .err { color: var(--err); }
+  .msg a { color: var(--accent); overflow-wrap: anywhere; }
   .tools { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
   form { display: flex; gap: 8px; }
   textarea { flex: 1; resize: none; font: inherit; padding: 10px 12px; border-radius: 8px;
@@ -52,17 +53,35 @@
   const send = document.getElementById('send');
   let threadId = null;
 
-  // Model trả lời bằng markdown: hiển thị **in đậm**, bỏ dấu # của tiêu đề. Chỉ tạo text node -> không bị chèn HTML.
+  // Thêm text vào el, biến URL http(s) (dạng trần hoặc [chữ](url)) thành link mở tab mới.
+  // Chỉ tạo text node / thẻ <a> có href http(s) -> không bị chèn HTML hay javascript:.
+  function appendLinked(el, text) {
+    const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
+    let last = 0, m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const a = document.createElement('a');
+      a.href = m[2] || m[3];
+      a.textContent = m[1] || m[3];
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      el.appendChild(a);
+      last = re.lastIndex;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  // Model trả lời bằng markdown: hiển thị **in đậm** và link, bỏ dấu # của tiêu đề.
   function renderMarkdown(div, text) {
     text = text.replace(/^#{1,6}\s+/gm, '');
     text.split(/\*\*(.+?)\*\*/g).forEach((part, i) => {
       if (!part) return;
       if (i % 2) {
         const b = document.createElement('strong');
-        b.textContent = part;
+        appendLinked(b, part);
         div.appendChild(b);
       } else {
-        div.appendChild(document.createTextNode(part));
+        appendLinked(div, part);
       }
     });
   }
@@ -85,7 +104,7 @@
   function greet() {
     log.replaceChildren();
     threadId = null;
-    add('Dạ em chào anh/chị. Em có thể hỗ trợ về thẻ, tài khoản, chuyển tiền, tiết kiệm, lãi suất, vay và phòng tránh lừa đảo ạ.');
+    add('Dạ em chào anh/chị. Em có thể hỗ trợ về thẻ, tài khoản, chuyển tiền, tiết kiệm, lãi suất, địa chỉ chi nhánh tại Quy Nhơn, vay và phòng tránh lừa đảo ạ.');
   }
 
   form.addEventListener('submit', async (e) => {

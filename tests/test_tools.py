@@ -67,3 +67,47 @@ def test_web_search_handles_backend_error(monkeypatch):
     monkeypatch.setattr(tools.tavily_client, 'search', boom)
     out = tools.web_search.invoke({'query': 'lãi suất'})
     assert out.startswith('Lỗi hệ thống khi tìm kiếm trên web (TimeoutError)')
+
+
+def branch_names(out: str) -> list[str]:
+    return [line for line in out.splitlines() if line.startswith('- ')]
+
+
+def test_branch_by_bank_includes_sources_and_reliability():
+    out = tools.get_branch_info.invoke({'bank': 'BIDV'})
+    assert 'ghi rõ nguồn' in out  # dặn model phải trích nguồn
+    assert len(branch_names(out)) == 3
+    assert '72 Lê Duẩn, P. Lý Thường Kiệt, TP Quy Nhơn' in out
+    assert out.count('Nguồn: https://') == 3
+    assert 'Độ tin cậy: Địa chỉ từ đăng ký thuế' in out
+
+
+def test_branch_splits_multiple_sources_and_hides_missing_values():
+    out = tools.get_branch_info.invoke({'bank': 'vcb'})
+    assert ('Nguồn: https://infodoanhnghiep.com/thong-tin/Ngan-Hang-Thuong-Mai-Co-Phan-Ngoai-Thuong-Viet-Nam-'
+            'Chi-Nhanh-Quy-Nhon-12437-008.html; https://cellphones.com.vn/sforum/tong-dai-vietcombank') in out
+    assert '0256 3541 377 (máy lẻ 108)' in out
+    assert 'Chưa có nguồn' not in out
+    assert 'Giờ làm việc: chưa có thông tin' in out
+
+
+@pytest.mark.parametrize('args, expected', [
+    ({'street': 'Lê Duẩn'}, 5),
+    ({'street': 'le duan'}, 5),
+    ({'bank': 'mb', 'street': 'Trường Chinh'}, 1),
+    ({'bank': 'oceanbank'}, 1),
+    ({}, 23),
+])
+def test_branch_filters(args, expected):
+    assert len(branch_names(tools.get_branch_info.invoke(args))) == expected
+
+
+def test_branch_not_found_lists_available_banks():
+    out = tools.get_branch_info.invoke({'bank': 'TPBank'})
+    assert out.startswith('Không có dữ liệu chi nhánh khớp')
+    assert 'MBV (OceanBank cũ)' in out
+
+
+def test_agent_main_has_all_tools():
+    names = [t.name for t in tools.get_agent_tools('agent_main')]
+    assert names == ['search_faq', 'get_interest_rate', 'get_branch_info', 'web_search']

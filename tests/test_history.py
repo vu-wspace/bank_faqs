@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from bank_faqs.utils.history import trim_history
+from bank_faqs.history import trim_history
 
 
 def turn(i: int, tool_output: str = 'x' * 1000) -> list:

@@ -1,26 +1,20 @@
-import bank_faqs  # noqa: F401 - phải import đầu tiên: nạp fix DLL cho torch trên Windows (xem __init__.py)
-import truststore
 import re
 import unicodedata
 import pandas as pd
-from dotenv import load_dotenv
 from langchain.tools import tool
 from typing import Dict, Any
+from bank_faqs.config import BRANCH_FILE, RATE_DATE, RATE_FILE
 from bank_faqs.vector_db import get_retriever
-from bank_faqs.utils.get_conversation_by_id import DATASET
 from tavily import TavilyClient
 from functools import lru_cache
 
-truststore.inject_into_ssl()
-load_dotenv()
-
 tavily_client = TavilyClient()
 
-RATE_FILE = DATASET / 'lai_suat_ngan_hang_23-10-2026.csv'
-RATE_DATE = '23/10/2026'
 TERMS = ['1T', '3T', '6T', '12T', '18T', '24T', '36T']
 
-# Tên gọi tắt hay gặp -> Mã NH trong file lãi suất (đã chuẩn hóa bằng _norm)
+NO_INFO = 'Chưa có nguồn'  # giá trị trong file chi nhánh khi chưa thu thập được
+
+# Tên gọi tắt hay gặp -> Mã NH trong file lãi suất/chi nhánh (đã chuẩn hóa bằng _norm)
 BANK_ALIASES = {
     'vcb': 'vietcombank', 'ngoaithuong': 'vietcombank',
     'dautuvaphattrien': 'bidv',
@@ -49,10 +43,17 @@ def _norm(text: str) -> str:
     return re.sub(r'[^a-z0-9]', '', text)
 
 @lru_cache
-def _rates() -> pd.DataFrame:
-    df = pd.read_csv(RATE_FILE, encoding='utf-8-sig')
+def _load_banks(path) -> pd.DataFrame:
+    # File lãi suất và file chi nhánh đều có cột 'Mã NH'; _key dùng để so khớp tên ngân hàng
+    df = pd.read_csv(path, encoding='utf-8-sig')
     df['_key'] = df['Mã NH'].map(_norm)
     return df
+
+def _rates() -> pd.DataFrame:
+    return _load_banks(RATE_FILE)
+
+def _branches() -> pd.DataFrame:
+    return _load_banks(BRANCH_FILE)
 
 def _find_bank(df: pd.DataFrame, bank: str) -> pd.DataFrame:
     key = _norm(bank).removeprefix('nganhang')
@@ -106,6 +107,34 @@ def get_interest_rate(bank: str = '') -> str:
         out.append(f"{r['Mã NH']} (cập nhật {RATE_DATE}, T = tháng):\n- Online: {online}\n- Tại quầy: {counter}")
     return '\n\n'.join(out)
 
+def _fmt_branch(r: pd.Series) -> str:
+    info = lambda col: 'chưa có thông tin' if r[col] == NO_INFO else r[col]
+    sources = '; '.join(s.strip() for s in r['Nguồn'].split(';') if s.strip())
+    return (f"- {r['Tên ngân hàng']} ({r['Mã NH']}), {r['Đơn vị']}\n"
+            f"  Địa chỉ (theo nguồn): {r['Địa chỉ (theo nguồn)']}\n"
+            f"  Phường mới (sau 1/7/2025): {r['Phường mới (sau 1/7/2025)']}\n"
+            f"  Điện thoại: {info('Điện thoại')} | Giờ làm việc: {info('Giờ làm việc')}\n"
+            f"  Độ tin cậy: {r['Ghi chú / độ tin cậy']}\n"
+            f"  Nguồn: {sources}")
+
+@tool
+def get_branch_info(bank: str = '', street: str = '') -> str:
+    """Tra địa chỉ, số điện thoại chi nhánh ngân hàng tại Quy Nhơn (dữ liệu tổng hợp từ nguồn công khai).
+    Truyền tên ngân hàng (vd: BIDV, Vietcombank, MB) và/hoặc tên đường (vd: Lê Duẩn). Để trống cả hai
+    để lấy danh sách mọi chi nhánh. Kết quả có nguồn (URL) của từng chi nhánh: khi trả lời phải ghi rõ nguồn."""
+    df = _branches()
+    hits = _find_bank(df, bank) if bank.strip() else df
+    if street.strip():
+        key = _norm(street)
+        hits = hits[hits['Địa chỉ (theo nguồn)'].map(lambda a: key in _norm(a))]
+    if hits.empty:
+        return (f"Không có dữ liệu chi nhánh khớp (ngân hàng: '{bank}', đường: '{street}'). "
+                f"Các ngân hàng có dữ liệu: {', '.join(df['Mã NH'].unique())}.")
+    return ('Chi nhánh ngân hàng tại Quy Nhơn (dữ liệu tổng hợp; địa chỉ có thể theo địa giới hành chính '
+            'trước 1/7/2025). Khi trả lời: ghi rõ nguồn (URL) của từng chi nhánh, nêu độ tin cậy, '
+            'không tự bổ sung số điện thoại hay giờ làm việc chưa có thông tin.\n\n'
+            + '\n\n'.join(_fmt_branch(r) for _, r in hits.iterrows()))
+
 @tool
 def web_search(query: str) -> Dict[str, Any] | str:
     """Tìm kiếm thông tin mới nhất trên web: khuyến mãi, tin tức ngân hàng, lãi suất vay,
@@ -118,10 +147,11 @@ def web_search(query: str) -> Dict[str, Any] | str:
         return (f'Lỗi hệ thống khi tìm kiếm trên web ({type(e).__name__}). '
                 'Không tự đưa ra số liệu; xin lỗi anh/chị và đề nghị xem trên ứng dụng hoặc liên hệ chi nhánh.')
 
-def main():
-    res = tavily_client.search('Lãi suất tiết kiệm Vietcombank hôm nay là bao nhiêu?', max_results=3)
-    for r in res['results']:
-        print(r['title'], '-', r['url'])
+# Tool của từng agent. Mô tả tool mà model nhìn thấy lấy từ docstring của hàm @tool ở trên.
+TOOLS = {t.name: t for t in (search_faq, get_interest_rate, get_branch_info, web_search)}
+AGENT_TOOLS = {
+    'agent_main': ['search_faq', 'get_interest_rate', 'get_branch_info', 'web_search'],
+}
 
-if __name__=='__main__':
-    main()
+def get_agent_tools(agent: str) -> list:
+    return [TOOLS[name] for name in AGENT_TOOLS[agent]]
