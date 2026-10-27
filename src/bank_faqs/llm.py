@@ -1,5 +1,6 @@
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openrouter import ChatOpenRouter
 
 groq_llm = ChatGroq(
     model='qwen/qwen3.8-27b',
@@ -15,6 +16,14 @@ groq_llm = ChatGroq(
 google_llm = ChatGoogleGenerativeAI(
     model='gemini-3.1-flash-lite',
     temperature=0,
+    timeout=60,
+    max_retries=3,
+)
+
+open_llm = ChatOpenRouter(
+    model='nvidia/nemotron-3-ultra-550b-a55b:free',
+    temperature=0,
+    max_tokens=1024,
     timeout=60,
     max_retries=3,
 )

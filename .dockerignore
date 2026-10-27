@@ -9,4 +9,5 @@
 *.py[oc]
 *.ipynb
 tests
+evals
 data/unused

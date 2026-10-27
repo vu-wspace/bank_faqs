@@ -68,7 +68,11 @@ bank_faqs/
 │   ├── vector_db.py      # Embedding bkai + Qdrant, nạp dữ liệu
 │   ├── api.py            # Web app FastAPI: trang chat + POST /chat + /health
 │   └── static/index.html # Giao diện chat
-├── tests/                # pytest (51 test)
+├── tests/                # pytest (56 test)
+├── evals/                # Đánh giá chất lượng agent
+│   ├── dataset.jsonl     # 37 câu hỏi kèm tool mong đợi, từ khóa, tiêu chí chấm
+│   ├── run_eval.py       # Script chấm truy xuất + agent
+│   └── results/          # Kết quả từng lần chạy (JSON), không commit
 ├── certs/                # CA nội bộ (*.crt) cho mạng có SSL inspection, không commit
 ├── Dockerfile            # Image cho web app
 ├── docker-compose.yml    # Qdrant + web app
@@ -124,7 +128,7 @@ Lệnh này chạy 2 container:
 - Nếu collection còn rỗng, API **tự nạp dữ liệu** từ `data/processed/cskh_gop_theo_id.csv`. Đặt `AUTO_INGEST: "false"` trong `docker-compose.yml` để tắt.
 - Model embedding được tải sẵn vào image lúc build, nên container không cần mạng tới Hugging Face.
 - Lần build đầu mất vài phút. Các lần sau, nếu chỉ sửa `src/` hoặc `data/`, Docker dùng lại cache của bước cài thư viện và tải model.
-- Image chỉ chứa thứ cần để chạy: không có `tests/`, `data/unused/`, `.env` (key được truyền qua `env_file` lúc chạy), hay thư viện dev.
+- Image chỉ chứa thứ cần để chạy: không có `tests/`, `evals/`, `data/unused/`, `.env` (key được truyền qua `env_file` lúc chạy), hay thư viện dev.
 
 Sau khi chạy:
 
@@ -243,7 +247,7 @@ uv run uvicorn bank_faqs.api:app --port 8000
 uv run pytest
 ```
 
-Gồm 51 test, chạy dưới 1 phút và không gọi LLM hay Tavily thật:
+Gồm 56 test, chạy dưới 1 phút và không gọi LLM hay Tavily thật (trace LangSmith được tắt trong `conftest.py`):
 
 - `tests/test_tools.py`:
   - nhận diện tên ngân hàng và dữ liệu lãi suất;
@@ -255,6 +259,45 @@ Gồm 51 test, chạy dưới 1 phút và không gọi LLM hay Tavily thật:
   - mã lỗi 429/502/503, của cả Gemini và Groq;
   - bộ nhớ theo `thread_id`;
   - tự nạp dữ liệu, thử lại khi Qdrant chưa sẵn sàng, và dùng chung một Qdrant client.
+- `tests/test_eval_dataset.py`: `evals/dataset.jsonl` hợp lệ (đúng tên trường, id không trùng, tool và `faq_id` có tồn tại, câu hỏi không chép nguyên văn từ dữ liệu). Nhờ vậy khi đổi tên tool hay sửa dữ liệu mà quên cập nhật eval thì test sẽ báo.
+
+## Đánh giá (eval)
+
+Khác với test, eval gọi **LLM, Qdrant và Tavily thật** để đo chất lượng câu trả lời. Eval chạy trên máy (không có trong image Docker), cần Qdrant đã có dữ liệu và key trong `.env`:
+
+```bash
+docker compose up -d qdrant                        # nếu chưa chạy
+uv run python evals/run_eval.py                    # chạy tất cả (~10-15 phút với gói free)
+uv run python evals/run_eval.py --only rate,branch # lọc theo category hoặc id (vd: faq-01)
+uv run python evals/run_eval.py --retrieval-only   # chỉ chấm truy xuất, không gọi LLM
+uv run python evals/run_eval.py --target graph     # chấm graph.py (Groq) thay cho agent.py (Gemini)
+```
+
+Bộ câu hỏi `evals/dataset.jsonl` gồm 37 câu, được **diễn đạt lại** khác câu gốc trong CSV (để retriever không tìm thấy chính nó): 21 FAQ, 4 chuyển nhân viên, 1 bảo mật OTP, 4 lãi suất, 3 chi nhánh, 1 tìm web, 3 ngoài phạm vi. Mỗi dòng là một JSON:
+
+| Trường | Ý nghĩa |
+|---|---|
+| `id`, `category`, `question` | Mã câu, nhóm, câu hỏi |
+| `tools` | Tool đầu tiên agent nên gọi (một trong danh sách). `[]` = không được gọi tool. `tools_optional: true` = không chấm |
+| `faq_id` | Hội thoại đúng trong `cskh_gop_theo_id.csv` (dùng chấm truy xuất và làm câu trả lời tham khảo cho judge) |
+| `must_contain` | Danh sách nhóm từ khóa; câu trả lời phải chứa ít nhất 1 từ của **mỗi** nhóm. Không phân biệt hoa thường, `7,4` khớp `7.4` |
+| `escalate`, `refuse` | Agent phải báo chuyển nhân viên / phải từ chối |
+| `criteria` | Tiêu chí cho LLM judge |
+
+Các chỉ số:
+
+- **Truy xuất:** đưa câu hỏi thẳng vào retriever (top 3), tính hit@1, hit@3, MRR theo `faq_id`.
+- **routing:** tool gọi đầu tiên có đúng `tools` không.
+- **keyword:** có đủ `must_contain` không.
+- **behavior:** có chuyển nhân viên / từ chối đúng như `escalate` / `refuse` không (do judge nhận định).
+- **judge:** Gemini chấm 1-5 theo `criteria`, kèm `grounded` (chỉ dùng thông tin từ kết quả tool). Judge dùng cùng model với agent nên điểm có thể dễ dãi; `routing` và `keyword` là kiểm tra cứng, tin cậy hơn.
+- Kèm độ trễ trung bình và số câu trả lời dài quá 80 từ (đếm cả link nguồn).
+
+Script in bảng tổng hợp theo nhóm, liệt kê câu chưa đạt và lưu chi tiết từng câu (câu trả lời, tool đã gọi, nhận xét của judge) vào `evals/results/<thời gian>-<target>.json`. Eval tự tắt trace LangSmith, nghỉ 4 giây giữa các câu (`--delay`), và khi Gemini/Groq báo vượt giới hạn (429) thì chờ 60 giây rồi thử lại (tối đa 2 lần, cho cả agent lẫn judge). Câu nào vẫn lỗi (hết quota, sai key…) được ghi là lỗi và bỏ khỏi thống kê, không làm dừng cả lần chạy. Nhấn Ctrl+C giữa chừng thì vẫn in và lưu kết quả các câu đã chạy. Trước khi chạy, script kiểm tra Qdrant đã có dữ liệu chưa; collection rỗng thì báo lỗi luôn, thay vì cho ra điểm truy xuất 0%.
+
+Kết quả gần nhất (27/10/2026, `agent.py` + `gemini-3.1-flash-lite`): truy xuất hit@1 96% (24/25, trượt `faq-14`), routing 35/36 (1 câu không chấm routing), keyword 9/9, behavior 8/8, judge 5/5 ở mọi câu, độ trễ trung bình ~11 giây. Điểm cần cải thiện: hơn nửa số câu trả lời dài quá 80 từ; agent không gọi `search_faq` với câu "bị lừa đọc OTP" (`esc-01`).
+
+**Thêm câu hỏi:** thêm một dòng vào `dataset.jsonl`. Nên diễn đạt khác câu trong dữ liệu, và với câu có số liệu thì thêm `must_contain` để kiểm tra cứng.
 
 ## Giới hạn của LLM (gói free)
 
