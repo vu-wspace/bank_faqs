@@ -103,6 +103,26 @@ def test_chat_gemini_other_error_returns_502(client):
     assert client.post('/chat', json={'message': 'hi'}).status_code == 502
 
 
+def test_chat_openrouter_rate_limit_returns_429(client):
+    import openrouter.errors as E
+    resp = httpx.Response(429, request=httpx.Request('POST', 'https://openrouter.ai'))
+    data = E.TooManyRequestsResponseErrorData(error={'code': 429, 'message': 'Rate limit exceeded: free-models-per-min'})
+    api.app.state.agent = FakeAgent(error=E.TooManyRequestsResponseError(data, resp))
+    assert client.post('/chat', json={'message': 'hi'}).status_code == 429
+
+
+@pytest.mark.parametrize('make_error', [
+    lambda E: E.InternalServerResponseError(E.InternalServerResponseErrorData(error={'code': 500, 'message': 'boom'}),
+                                            httpx.Response(500, request=httpx.Request('POST', 'https://openrouter.ai'))),
+    lambda E: E.NoResponseError(),  # mất kết nối, không nhận được phản hồi
+])
+def test_chat_openrouter_other_error_returns_502(client, make_error):
+    # Lỗi OpenRouter không kế thừa ModelError: không bắt riêng thì API trả 500 kèm traceback
+    import openrouter.errors as E
+    api.app.state.agent = FakeAgent(error=make_error(E))
+    assert client.post('/chat', json={'message': 'hi'}).status_code == 502
+
+
 def test_chat_upstream_error_returns_502(client):
     resp = httpx.Response(500, request=httpx.Request('POST', 'https://api.groq.com'))
     api.app.state.agent = FakeAgent(error=groq.InternalServerError('boom', response=resp, body=None))

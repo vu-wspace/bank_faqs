@@ -2,7 +2,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import AnyMessage
 
 # Gửi lại toàn bộ lịch sử (kể cả kết quả tool dài của các lượt trước) làm số token đầu vào tăng mãi:
-# vài lượt là vượt giới hạn gói free (vd Groq 7000 token/phút -> lỗi 413), lại tốn quota Gemini.
+# vài lượt là vượt giới hạn token của gói free (vd Groq 7000 token/phút -> lỗi 413), lại chậm và tốn token.
 # Chỉ cắt bớt khi gửi model, state vẫn giữ đủ.
 KEEP_TURNS = 4          # số lượt hỏi gần nhất được gửi cho model
 OLD_TOOL_CHARS = 300    # kết quả tool của các lượt trước chỉ giữ ngần này ký tự

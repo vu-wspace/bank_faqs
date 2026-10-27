@@ -1,19 +1,25 @@
 import bank_faqs  # noqa: F401 - phải import đầu tiên khi chạy file trực tiếp (xem __init__.py)
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelFallbackMiddleware
 from langgraph.types import Checkpointer
 from bank_faqs.history import TrimHistoryMiddleware
-from bank_faqs.llm import groq_llm, google_llm, open_llm
+from bank_faqs.llm import google_llm, open_llm
 from bank_faqs.prompts import get_system_prompt
 from bank_faqs.tools import get_agent_tools
 
-def build_agent(checkpointer: Checkpointer = None):
+def build_agent(checkpointer: Checkpointer = None, fallback: bool = True):
     # checkpointer (vd: InMemorySaver) giúp agent nhớ hội thoại theo thread_id - api.py dùng cách này.
     # Không truyền khi chạy qua `langgraph dev` vì server tự quản lý bộ nhớ.
+    middleware = [TrimHistoryMiddleware()]
+    if fallback:
+        # OpenRouter gói free hết quota ngày (hoặc lỗi) thì trả lời bằng Gemini thay vì báo lỗi cho khách.
+        # Eval tắt fallback để điểm số phản ánh đúng model chính.
+        middleware.append(ModelFallbackMiddleware(google_llm))
     return create_agent(
         model=open_llm,
         tools=get_agent_tools('agent_main'),
         system_prompt=get_system_prompt('agent_main'),
-        middleware=[TrimHistoryMiddleware()],
+        middleware=middleware,
         checkpointer=checkpointer,
     )
 

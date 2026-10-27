@@ -102,6 +102,18 @@ def test_branch_filters(args, expected):
     assert len(branch_names(tools.get_branch_info.invoke(args))) == expected
 
 
+def test_branch_blank_cells_do_not_crash(monkeypatch):
+    # File chi nhánh sửa tay: ô bỏ trống được pandas đọc thành NaN
+    df = tools._branches().copy()
+    df.loc[df['Mã NH'] == 'BIDV', ['Nguồn', 'Điện thoại', 'Địa chỉ (theo nguồn)']] = float('nan')
+    monkeypatch.setattr(tools, '_branches', lambda: df)
+    out = tools.get_branch_info.invoke({'bank': 'BIDV'})
+    assert len(branch_names(out)) == 3
+    assert 'nan' not in out
+    assert 'Điện thoại: chưa có thông tin' in out
+    assert len(branch_names(tools.get_branch_info.invoke({'street': 'Lê Duẩn'}))) == 4  # BIDV mất địa chỉ
+
+
 def test_branch_not_found_lists_available_banks():
     out = tools.get_branch_info.invoke({'bank': 'TPBank'})
     assert out.startswith('Không có dữ liệu chi nhánh khớp')

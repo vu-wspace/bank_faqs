@@ -108,7 +108,7 @@ def build_target(name: str):
         from bank_faqs.graph import graph
         return graph
     from bank_faqs.agent import build_agent
-    return build_agent()
+    return build_agent(fallback=False)  # không để Gemini trả lời thay khi model chính lỗi
 
 
 def _invoke(runnable, payload, attempts: int = 3):
@@ -116,10 +116,13 @@ def _invoke(runnable, payload, attempts: int = 3):
         try:
             return runnable.invoke(payload)
         except Exception as e:
-            # Gói free giới hạn request/token mỗi phút (Gemini: GoogleRateLimitError, Groq: RateLimitError):
-            # chờ hết cửa sổ 1 phút rồi thử lại
-            rate_limited = 'RateLimit' in type(e).__name__ or 'RESOURCE_EXHAUSTED' in str(e)
-            if rate_limited and attempt < attempts - 1:
+            # Gói free giới hạn request/token mỗi phút (Gemini: GoogleRateLimitError, Groq: RateLimitError,
+            # OpenRouter: TooManyRequestsResponseError): chờ hết cửa sổ 1 phút rồi thử lại
+            name = type(e).__name__
+            rate_limited = 'RateLimit' in name or 'TooManyRequests' in name or 'RESOURCE_EXHAUSTED' in str(e)
+            per_day = 'per-day' in str(e) or 'PerDay' in str(e)  # hết quota ngày: chờ 60s cũng vô ích
+            if rate_limited and not per_day and attempt < attempts - 1:
+                print(f'  vượt giới hạn ({type(e).__name__}), chờ 60s rồi thử lại lần {attempt + 2}/{attempts}', flush=True)
                 time.sleep(60)
                 continue
             raise
@@ -177,9 +180,10 @@ def run_case(target, judge, case: dict, references: dict) -> dict:
     }
 
 
-def _rate(rows: list[dict], key: str) -> str:
-    vals = [r[key] for r in rows if r.get(key) is not None]
-    return f'{sum(vals)}/{len(vals)}' if vals else '-'
+def _passed(s: pd.Series) -> str:
+    # Số câu đạt / số câu có chấm tiêu chí này (None = không áp dụng)
+    s = s.dropna()
+    return f'{int(s.sum())}/{len(s)}' if len(s) else '-'
 
 
 def print_report(retrieval: dict, rows: list[dict]):
@@ -202,13 +206,13 @@ def print_report(retrieval: dict, rows: list[dict]):
     if not df.empty:
         summary = df.groupby('category').agg(
             n=('score', 'size'),
-            routing=('routing', lambda s: _fmt_bool(s)), keyword=('keyword', lambda s: _fmt_bool(s)),
-            behavior=('behavior', lambda s: _fmt_bool(s)), grounded=('grounded', lambda s: _fmt_bool(s)),
+            routing=('routing', _passed), keyword=('keyword', _passed),
+            behavior=('behavior', _passed), grounded=('grounded', _passed),
             score=('score', 'mean'), latency_s=('latency_s', 'mean'),
         )
         print(summary.round(2).to_string())
-        print(f"\nTổng: routing {_rate(ok, 'routing')} | keyword {_rate(ok, 'keyword')} | "
-              f"behavior {_rate(ok, 'behavior')} | grounded {int(df['grounded'].sum())}/{len(df)} | "
+        print(f"\nTổng: routing {_passed(df['routing'])} | keyword {_passed(df['keyword'])} | "
+              f"behavior {_passed(df['behavior'])} | grounded {_passed(df['grounded'])} | "
               f"điểm judge TB {df['score'].mean():.2f}/5 | độ trễ TB {df['latency_s'].mean():.1f}s | "
               f">80 từ: {int((df['words'] > 80).sum())} câu")
 
@@ -223,11 +227,6 @@ def print_report(retrieval: dict, rows: list[dict]):
         if fails:
             print(f"[{r['id']}] {', '.join(fails)} | tools={r['tools_called']}\n"
                   f"  Hỏi: {r['question']}\n  Đáp: {r['answer'][:300]}\n  Judge: {r['judge']['reason']}")
-
-
-def _fmt_bool(s: pd.Series) -> str:
-    s = s.dropna()
-    return f'{int(s.sum())}/{len(s)}' if len(s) else '-'
 
 
 def main():

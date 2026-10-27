@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from langchain_core.exceptions import ModelError, ModelRateLimitError
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphRecursionError
+from openrouter import errors as openrouter_errors
 from pydantic import BaseModel, Field
 
 from bank_faqs.agent import build_agent
@@ -32,7 +33,8 @@ class ChatResponse(BaseModel):
 def is_rate_limited(e: Exception) -> bool:
     # Gemini (langchain-google-genai) ném ModelRateLimitError chung của langchain_core.
     # Groq ném lỗi riêng: 429, hoặc 413 "Request too large" kèm code rate_limit_exceeded.
-    if isinstance(e, (ModelRateLimitError, groq.RateLimitError)):
+    # OpenRouter (SDK openrouter) cũng ném lỗi riêng, không kế thừa ModelError.
+    if isinstance(e, (ModelRateLimitError, groq.RateLimitError, openrouter_errors.TooManyRequestsResponseError)):
         return True
     if not isinstance(e, groq.APIError):
         return False
@@ -88,7 +90,8 @@ def chat(req: ChatRequest, request: Request):
     n_before = len(agent.get_state(config).values.get('messages', []))
     try:
         res = agent.invoke({'messages': [{'role': 'user', 'content': req.message}]}, config)
-    except (groq.APIError, ModelError, GraphRecursionError) as e:
+    except (groq.APIError, openrouter_errors.OpenRouterError, openrouter_errors.NoResponseError,
+            ModelError, GraphRecursionError) as e:
         if is_rate_limited(e):
             # Ghi lại loại giới hạn (token/phút, token/ngày...) để biết chờ hay phải nâng gói
             log.warning('LLM rate limit: %s', e)

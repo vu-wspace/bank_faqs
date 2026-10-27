@@ -2,7 +2,7 @@ import re
 import unicodedata
 import pandas as pd
 from langchain.tools import tool
-from typing import Dict, Any
+from typing import Any
 from bank_faqs.config import BRANCH_FILE, RATE_DATE, RATE_FILE
 from bank_faqs.vector_db import get_retriever
 from tavily import TavilyClient
@@ -66,6 +66,10 @@ def _find_bank(df: pd.DataFrame, bank: str) -> pd.DataFrame:
 def _fmt(v) -> str:
     return 'không có' if pd.isna(v) else f'{v:g}%'
 
+def _fmt_rates(r: pd.Series, kind: str) -> str:
+    # kind: 'Online' hoặc 'Tại quầy' (tiền tố tên cột trong file lãi suất)
+    return ', '.join(f"{t} {_fmt(r[f'{kind} {t} (%/năm)'])}" for t in TERMS)
+
 @tool
 def search_faq(query: str) -> str:
     """Tra cứu câu trả lời chăm sóc khách hàng từ dữ liệu nội bộ: thẻ, chuyển tiền, tài khoản, 
@@ -91,30 +95,32 @@ def get_interest_rate(bank: str = '') -> str:
     Luôn dùng tool này trước web_search cho câu hỏi lãi suất tiết kiệm."""
     df = _rates()
     if not bank.strip():
-        cols = [f'Online {t} (%/năm)' for t in TERMS]
-        lines = [f"{r['Mã NH']}: " + ', '.join(f'{t} {_fmt(r[c])}' for t, c in zip(TERMS, cols))
-                 for _, r in df.iterrows()]
+        lines = [f"{r['Mã NH']}: {_fmt_rates(r, 'Online')}" for _, r in df.iterrows()]
         return f'Lãi suất tiết kiệm online (%/năm), cập nhật {RATE_DATE}:\n' + '\n'.join(lines)
 
     hits = _find_bank(df, bank)
     if hits.empty:
         return (f"Không có dữ liệu lãi suất của '{bank}'. "
                 f"Các ngân hàng có dữ liệu: {', '.join(df['Mã NH'])}.")
-    out = []
-    for _, r in hits.iterrows():
-        online = ', '.join(f"{t} {_fmt(r[f'Online {t} (%/năm)'])}" for t in TERMS)
-        counter = ', '.join(f"{t} {_fmt(r[f'Tại quầy {t} (%/năm)'])}" for t in TERMS)
-        out.append(f"{r['Mã NH']} (cập nhật {RATE_DATE}, T = tháng):\n- Online: {online}\n- Tại quầy: {counter}")
-    return '\n\n'.join(out)
+    return '\n\n'.join(
+        f"{r['Mã NH']} (cập nhật {RATE_DATE}, T = tháng):\n"
+        f"- Online: {_fmt_rates(r, 'Online')}\n- Tại quầy: {_fmt_rates(r, 'Tại quầy')}"
+        for _, r in hits.iterrows()
+    )
 
 def _fmt_branch(r: pd.Series) -> str:
-    info = lambda col: 'chưa có thông tin' if r[col] == NO_INFO else r[col]
-    sources = '; '.join(s.strip() for s in r['Nguồn'].split(';') if s.strip())
-    return (f"- {r['Tên ngân hàng']} ({r['Mã NH']}), {r['Đơn vị']}\n"
-            f"  Địa chỉ (theo nguồn): {r['Địa chỉ (theo nguồn)']}\n"
-            f"  Phường mới (sau 1/7/2025): {r['Phường mới (sau 1/7/2025)']}\n"
+    # File chi nhánh sửa tay: ô có thể ghi "Chưa có nguồn" hoặc bị bỏ trống (pandas đọc thành NaN).
+    # Cả hai đều hiện "chưa có thông tin" để model không tự bịa, và không in ra chữ "nan".
+    def info(col: str) -> str:
+        v = r[col]
+        return 'chưa có thông tin' if pd.isna(v) or str(v).strip() in ('', NO_INFO) else str(v).strip()
+
+    sources = '; '.join(s.strip() for s in info('Nguồn').split(';') if s.strip())
+    return (f"- {r['Tên ngân hàng']} ({r['Mã NH']}), {info('Đơn vị')}\n"
+            f"  Địa chỉ (theo nguồn): {info('Địa chỉ (theo nguồn)')}\n"
+            f"  Phường mới (sau 1/7/2025): {info('Phường mới (sau 1/7/2025)')}\n"
             f"  Điện thoại: {info('Điện thoại')} | Giờ làm việc: {info('Giờ làm việc')}\n"
-            f"  Độ tin cậy: {r['Ghi chú / độ tin cậy']}\n"
+            f"  Độ tin cậy: {info('Ghi chú / độ tin cậy')}\n"
             f"  Nguồn: {sources}")
 
 @tool
@@ -126,7 +132,7 @@ def get_branch_info(bank: str = '', street: str = '') -> str:
     hits = _find_bank(df, bank) if bank.strip() else df
     if street.strip():
         key = _norm(street)
-        hits = hits[hits['Địa chỉ (theo nguồn)'].map(lambda a: key in _norm(a))]
+        hits = hits[hits['Địa chỉ (theo nguồn)'].map(lambda a: isinstance(a, str) and key in _norm(a))]
     if hits.empty:
         return (f"Không có dữ liệu chi nhánh khớp (ngân hàng: '{bank}', đường: '{street}'). "
                 f"Các ngân hàng có dữ liệu: {', '.join(df['Mã NH'].unique())}.")
@@ -136,7 +142,7 @@ def get_branch_info(bank: str = '', street: str = '') -> str:
             + '\n\n'.join(_fmt_branch(r) for _, r in hits.iterrows()))
 
 @tool
-def web_search(query: str) -> Dict[str, Any] | str:
+def web_search(query: str) -> dict[str, Any] | str:
     """Tìm kiếm thông tin mới nhất trên web: khuyến mãi, tin tức ngân hàng, lãi suất vay,
     lãi suất của ngân hàng không có trong get_interest_rate.
     Chỉ dùng khi search_faq và get_interest_rate không có câu trả lời.

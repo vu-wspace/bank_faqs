@@ -69,8 +69,7 @@ def main():
     n = ingest(db)
     print(f"3. Đã nạp {n} hội thoại vào '{COLLECTION}'", flush=True)
 
-    retriever = db.as_retriever(search_kwargs={'k': 3})
-    for h in retriever.invoke('quên mật khẩu app ngân hàng'):
+    for h in get_retriever().invoke('quên mật khẩu app ngân hàng'):
         print(h.metadata['hoi_thoai_id'], '|', h.page_content[:60])
 
 if __name__ == "__main__":

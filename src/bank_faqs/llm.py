@@ -24,6 +24,8 @@ open_llm = ChatOpenRouter(
     model='nvidia/nemotron-3-ultra-550b-a55b:free',
     temperature=0,
     max_tokens=1024,
-    timeout=60,
+    # ChatOpenRouter tính timeout bằng MILI GIÂY (khác ChatGroq/ChatGoogleGenerativeAI tính bằng giây).
+    # Đặt 60 là 60ms -> mọi request đều timeout rồi SDK thử lại liên tục, agent treo vài phút.
+    timeout=60_000,
     max_retries=3,
 )

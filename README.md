@@ -5,7 +5,7 @@ Agent chăm sóc khách hàng ngân hàng bằng tiếng Việt, xây dựng v�
 ## Cách hoạt động
 
 ```
-Khách hỏi ──> Agent (Gemini · gemini-3.1-flash-lite)
+Khách hỏi ──> Agent (OpenRouter · nvidia/nemotron-3-ultra-550b-a55b:free; lỗi/hết quota thì dùng Gemini)
                  │
                  ├── search_faq         Tìm hội thoại CSKH tương tự trong Qdrant (thủ tục, xử lý sự cố)
                  ├── get_interest_rate  Tra bảng lãi suất tiết kiệm (CSV)
@@ -32,12 +32,12 @@ Quy tắc hành vi của agent (system prompt trong `prompts.py`):
 | `web_search(query)` | Tavily, 3 kết quả | Khuyến mãi, tin tức, lãi suất vay, ngân hàng không có trong dữ liệu |
 
 - `get_interest_rate` và `get_branch_info` nhận tên ngân hàng không dấu, viết tắt, tên cũ hoặc có tiền tố "ngân hàng" (`vcb`, `Vietin`, `mb bank`, `bac a`, `ngân hàng Techcom`, `oceanbank`…). Danh sách tên tắt nằm trong `BANK_ALIASES` ở `tools.py`. Tên đường cũng so khớp không dấu (`le duan` khớp "Lê Duẩn").
-- `get_branch_info` trả về cho từng chi nhánh: địa chỉ theo nguồn, phường mới (sau sáp nhập 1/7/2025), điện thoại, giờ làm việc, **độ tin cậy** và **URL nguồn**. Ô ghi "Chưa có nguồn" trong CSV được trả về là "chưa có thông tin", để model không tự bịa. Trong câu trả lời, agent ghi link nguồn cạnh từng chi nhánh, và trang chat hiển thị link bấm được.
+- `get_branch_info` trả về cho từng chi nhánh: địa chỉ theo nguồn, phường mới (sau sáp nhập 1/7/2025), điện thoại, giờ làm việc, **độ tin cậy** và **URL nguồn**. Ô ghi "Chưa có nguồn" hoặc bỏ trống trong CSV được trả về là "chưa có thông tin", để model không tự bịa. Trong câu trả lời, agent ghi link nguồn cạnh từng chi nhánh, và trang chat hiển thị link bấm được.
 - `search_faq` và `web_search` tự bắt lỗi (Qdrant sập, Tavily timeout…) và trả thông báo lỗi cho model, thay vì làm hỏng cả lượt hội thoại.
 
 **Cập nhật dữ liệu:**
 - **Lãi suất:** đặt file CSV mới vào `data/raw/` (giữ nguyên tên cột), rồi sửa `RATE_FILE` và `RATE_DATE` trong `config.py`.
-- **Chi nhánh:** sửa trực tiếp `data/raw/chi_nhanh_ngan_hang_quy_nhon.csv` (giữ nguyên tên cột). Cột `Nguồn` có thể chứa nhiều URL, phân cách bằng `;`.
+- **Chi nhánh:** sửa trực tiếp `data/raw/chi_nhanh_ngan_hang_quy_nhon.csv` (giữ nguyên tên cột). Cột `Nguồn` có thể chứa nhiều URL, phân cách bằng `;`. Ô chưa có dữ liệu thì ghi "Chưa có nguồn" hoặc để trống; cả hai đều được trả về là "chưa có thông tin".
 - **Hội thoại CSKH:** sửa `data/raw/cskh_hoi_thoai_ngan_hang.csv`, rồi chạy lại bước [nạp dữ liệu](#chạy-trên-máy-không-docker).
 
 **Thêm tool mới:** viết hàm `@tool` trong `tools.py`; docstring của hàm chính là mô tả mà model đọc để quyết định khi nào gọi tool. Sau đó thêm vào `TOOLS` và `AGENT_TOOLS` ở cuối `tools.py`, rồi bổ sung quy tắc dùng tool trong `prompts.py`.
@@ -51,14 +51,12 @@ bank_faqs/
 │   │   ├── cskh_hoi_thoai_ngan_hang.csv      # Hội thoại CSKH, mỗi dòng là 1 lượt nói
 │   │   ├── lai_suat_ngan_hang_23-10-2026.csv # Lãi suất tiết kiệm 17 ngân hàng (get_interest_rate)
 │   │   └── chi_nhanh_ngan_hang_quy_nhon.csv  # 23 chi nhánh tại Quy Nhơn, có nguồn (get_branch_info)
-│   ├── processed/
-│   │   └── cskh_gop_theo_id.csv              # Hội thoại đã gộp theo id, sinh bởi data_prep.py, nạp vào Qdrant
-│   └── unused/                               # Chưa dùng trong code, không đưa vào image Docker
-│       └── cskh_hoi_dap_ngan_hang.csv        # Cùng dữ liệu hội thoại, dạng cặp hỏi–đáp kèm ngữ cảnh
+│   └── processed/
+│       └── cskh_gop_theo_id.csv              # Hội thoại đã gộp theo id, sinh bởi data_prep.py, nạp vào Qdrant
 ├── src/bank_faqs/
 │   ├── __init__.py       # Khởi tạo chung: fix DLL torch (Windows), dùng kho chứng chỉ hệ thống, nạp .env
 │   ├── config.py         # Đường dẫn dữ liệu, cấu hình Qdrant/embedding, biến môi trường
-│   ├── llm.py            # Cấu hình LLM: google_llm (Gemini), groq_llm (Groq)
+│   ├── llm.py            # Cấu hình LLM: open_llm (OpenRouter, đang dùng), google_llm (Gemini, judge của eval), groq_llm (Groq)
 │   ├── prompts.py        # System prompt của từng agent
 │   ├── tools.py          # 4 tool + gán tool cho từng agent
 │   ├── history.py        # Cắt bớt lịch sử hội thoại trước khi gửi model
@@ -68,36 +66,38 @@ bank_faqs/
 │   ├── vector_db.py      # Embedding bkai + Qdrant, nạp dữ liệu
 │   ├── api.py            # Web app FastAPI: trang chat + POST /chat + /health
 │   └── static/index.html # Giao diện chat
-├── tests/                # pytest (56 test)
+├── tests/                # pytest (65 test, không gọi API thật)
 ├── evals/                # Đánh giá chất lượng agent
 │   ├── dataset.jsonl     # 37 câu hỏi kèm tool mong đợi, từ khóa, tiêu chí chấm
 │   ├── run_eval.py       # Script chấm truy xuất + agent
 │   └── results/          # Kết quả từng lần chạy (JSON), không commit
 ├── certs/                # CA nội bộ (*.crt) cho mạng có SSL inspection, không commit
+├── .env                  # API key, không commit (xem Cài đặt)
 ├── Dockerfile            # Image cho web app
 ├── docker-compose.yml    # Qdrant + web app
 ├── langgraph.json        # Cấu hình cho `langgraph dev`
 ├── pyproject.toml        # Thư viện (nguồn chính, cùng uv.lock)
-└── requirements.txt      # Danh sách thư viện cho pip, khớp với pyproject.toml
+└── requirements.txt      # Danh sách thư viện cho pip, phải khớp pyproject.toml (có test kiểm tra)
 ```
 
 ## Yêu cầu
 
 - Python 3.12.15 và [uv](https://docs.astral.sh/uv/)
 - Docker (để chạy Qdrant và web app)
-- API key: [Google AI Studio](https://aistudio.google.com/apikey) (Gemini), [Groq](https://console.groq.com), [Tavily](https://tavily.com); LangSmith (tùy chọn, để trace)
+- API key: [OpenRouter](https://openrouter.ai/keys) (agent), [Google AI Studio](https://aistudio.google.com/apikey) (Gemini, judge của eval), [Groq](https://console.groq.com), [Tavily](https://tavily.com); LangSmith (tùy chọn, để trace). `llm.py` khởi tạo cả 3 client LLM ngay khi import nên cần đủ cả 3 key, kể cả model không dùng
 
 ## Cài đặt
 
 ```bash
-uv sync            # cài thư viện + nhóm dev (pytest, langgraph-cli, jupyter)
+uv sync            # cài thư viện + nhóm dev (pytest, langgraph-cli)
 ```
 
-Nếu dùng pip thay cho uv: `pip install -r requirements.txt`. File này đã có sẵn index của torch bản CPU. Thư viện dev cài riêng theo hướng dẫn ở cuối file.
+Nếu dùng pip thay cho uv: `pip install -r requirements.txt`. File này đã có sẵn index của torch bản CPU. Thư viện dev cài riêng theo hướng dẫn ở cuối file. Khi thêm hoặc bớt thư viện, sửa `pyproject.toml` (`uv add …`) rồi sửa `requirements.txt` cho khớp; `tests/test_requirements.py` sẽ báo nếu hai file lệch nhau.
 
 Tạo file `.env` ở thư mục gốc (đã có trong `.gitignore`):
 
 ```env
+OPENROUTER_API_KEY=...
 GOOGLE_API_KEY=...
 GROQ_API_KEY=...
 TAVILY_API_KEY=...
@@ -128,7 +128,8 @@ Lệnh này chạy 2 container:
 - Nếu collection còn rỗng, API **tự nạp dữ liệu** từ `data/processed/cskh_gop_theo_id.csv`. Đặt `AUTO_INGEST: "false"` trong `docker-compose.yml` để tắt.
 - Model embedding được tải sẵn vào image lúc build, nên container không cần mạng tới Hugging Face.
 - Lần build đầu mất vài phút. Các lần sau, nếu chỉ sửa `src/` hoặc `data/`, Docker dùng lại cache của bước cài thư viện và tải model.
-- Image chỉ chứa thứ cần để chạy: không có `tests/`, `evals/`, `data/unused/`, `.env` (key được truyền qua `env_file` lúc chạy), hay thư viện dev.
+- Image chỉ chứa thứ cần để chạy (`src/`, `data/`, thư viện, model embedding): không có `tests/`, `evals/`, `.env` (key được truyền qua `env_file` lúc chạy), hay thư viện dev.
+- Sau khi sửa code, dữ liệu hoặc thư viện: chạy lại `docker compose up -d --build api` để build lại image.
 
 Sau khi chạy:
 
@@ -159,8 +160,8 @@ Gửi lại `thread_id` ở các lượt sau để agent nhớ ngữ cảnh. Ví
 | Mã lỗi | Khi nào |
 |---|---|
 | 422 | `message` rỗng hoặc dài quá 1000 ký tự |
-| 429 | Gemini/Groq báo vượt giới hạn (theo phút hoặc theo ngày); xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free) |
-| 502 | Gemini/Groq lỗi khác |
+| 429 | Cả OpenRouter lẫn Gemini dự phòng đều báo vượt giới hạn (theo phút hoặc theo ngày); xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free) |
+| 502 | Cả OpenRouter lẫn Gemini dự phòng đều lỗi (lỗi khác, mất kết nối…) |
 | 503 | `/health`: không kết nối được Qdrant |
 
 ```bash
@@ -226,7 +227,7 @@ print(res['messages'][-1].text)
 uv run langgraph dev
 ```
 
-Server chạy tại http://127.0.0.1:2024 với 2 graph khai báo trong `langgraph.json`: `agent_main` (`agent.py`) và `bank_graph` (`graph.py`). Hai graph dùng chung tool và system prompt, chỉ khác cách dựng và LLM (xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free)). Có thể chat và xem từng bước gọi tool trên LangGraph Studio (link in ra khi khởi động), hoặc gọi qua API:
+Server chạy tại http://127.0.0.1:2024 với 2 graph khai báo trong `langgraph.json`: `agent_main` (`agent.py`) và `bank_graph` (`graph.py`). Hai graph dùng chung LLM, tool và system prompt, chỉ khác cách dựng. Có thể chat và xem từng bước gọi tool trên LangGraph Studio (link in ra khi khởi động), hoặc gọi qua API:
 
 ```bash
 curl http://127.0.0.1:2024/runs/wait -H 'Content-Type: application/json' \
@@ -247,18 +248,21 @@ uv run uvicorn bank_faqs.api:app --port 8000
 uv run pytest
 ```
 
-Gồm 56 test, chạy dưới 1 phút và không gọi LLM hay Tavily thật (trace LangSmith được tắt trong `conftest.py`):
+Gồm 65 test, chạy dưới 1 phút và không gọi LLM hay Tavily thật (trace LangSmith được tắt trong `conftest.py`):
 
 - `tests/test_tools.py`:
   - nhận diện tên ngân hàng và dữ liệu lãi suất;
-  - tool chi nhánh: lọc theo ngân hàng/đường, có nguồn và độ tin cậy, tách nhiều URL nguồn, ẩn ô "Chưa có nguồn";
+  - tool chi nhánh: lọc theo ngân hàng/đường, có nguồn và độ tin cậy, tách nhiều URL nguồn, ẩn ô "Chưa có nguồn" và ô bỏ trống;
   - tool tự bắt lỗi khi Qdrant hoặc Tavily lỗi.
 - `tests/test_history.py`: cắt lịch sử đúng ranh giới lượt hỏi, rút gọn kết quả tool cũ, không làm thay đổi state.
 - `tests/test_api.py`:
   - các endpoint (dùng agent giả) và validate input;
-  - mã lỗi 429/502/503, của cả Gemini và Groq;
+  - mã lỗi 429/502/503, của OpenRouter, Gemini và Groq;
   - bộ nhớ theo `thread_id`;
   - tự nạp dữ liệu, thử lại khi Qdrant chưa sẵn sàng, và dùng chung một Qdrant client.
+- `tests/test_agent.py`: model chính lỗi thì agent trả lời bằng model dự phòng; tắt dự phòng (`fallback=False`) thì lỗi được báo ra.
+- `tests/test_llm.py`: `timeout` của từng LLM đúng đơn vị (OpenRouter tính bằng mili giây, xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free)).
+- `tests/test_requirements.py`: `requirements.txt` có đúng các thư viện trong `pyproject.toml`.
 - `tests/test_eval_dataset.py`: `evals/dataset.jsonl` hợp lệ (đúng tên trường, id không trùng, tool và `faq_id` có tồn tại, câu hỏi không chép nguyên văn từ dữ liệu). Nhờ vậy khi đổi tên tool hay sửa dữ liệu mà quên cập nhật eval thì test sẽ báo.
 
 ## Đánh giá (eval)
@@ -267,10 +271,10 @@ Khác với test, eval gọi **LLM, Qdrant và Tavily thật** để đo chất 
 
 ```bash
 docker compose up -d qdrant                        # nếu chưa chạy
-uv run python evals/run_eval.py                    # chạy tất cả (~10-15 phút với gói free)
+uv run python evals/run_eval.py                    # chạy tất cả (~10-15 phút; gói free OpenRouter không đủ quota, xem bên dưới)
 uv run python evals/run_eval.py --only rate,branch # lọc theo category hoặc id (vd: faq-01)
 uv run python evals/run_eval.py --retrieval-only   # chỉ chấm truy xuất, không gọi LLM
-uv run python evals/run_eval.py --target graph     # chấm graph.py (Groq) thay cho agent.py (Gemini)
+uv run python evals/run_eval.py --target graph     # chấm graph.py (StateGraph) thay cho agent.py (create_agent)
 ```
 
 Bộ câu hỏi `evals/dataset.jsonl` gồm 37 câu, được **diễn đạt lại** khác câu gốc trong CSV (để retriever không tìm thấy chính nó): 21 FAQ, 4 chuyển nhân viên, 1 bảo mật OTP, 4 lãi suất, 3 chi nhánh, 1 tìm web, 3 ngoài phạm vi. Mỗi dòng là một JSON:
@@ -290,30 +294,47 @@ Các chỉ số:
 - **routing:** tool gọi đầu tiên có đúng `tools` không.
 - **keyword:** có đủ `must_contain` không.
 - **behavior:** có chuyển nhân viên / từ chối đúng như `escalate` / `refuse` không (do judge nhận định).
-- **judge:** Gemini chấm 1-5 theo `criteria`, kèm `grounded` (chỉ dùng thông tin từ kết quả tool). Judge dùng cùng model với agent nên điểm có thể dễ dãi; `routing` và `keyword` là kiểm tra cứng, tin cậy hơn.
+- **judge:** Gemini (`google_llm`) chấm 1-5 theo `criteria`, kèm `grounded` (chỉ dùng thông tin từ kết quả tool). Judge là LLM nên vẫn có thể chấm sai; `routing` và `keyword` là kiểm tra cứng, tin cậy hơn.
 - Kèm độ trễ trung bình và số câu trả lời dài quá 80 từ (đếm cả link nguồn).
 
-Script in bảng tổng hợp theo nhóm, liệt kê câu chưa đạt và lưu chi tiết từng câu (câu trả lời, tool đã gọi, nhận xét của judge) vào `evals/results/<thời gian>-<target>.json`. Eval tự tắt trace LangSmith, nghỉ 4 giây giữa các câu (`--delay`), và khi Gemini/Groq báo vượt giới hạn (429) thì chờ 60 giây rồi thử lại (tối đa 2 lần, cho cả agent lẫn judge). Câu nào vẫn lỗi (hết quota, sai key…) được ghi là lỗi và bỏ khỏi thống kê, không làm dừng cả lần chạy. Nhấn Ctrl+C giữa chừng thì vẫn in và lưu kết quả các câu đã chạy. Trước khi chạy, script kiểm tra Qdrant đã có dữ liệu chưa; collection rỗng thì báo lỗi luôn, thay vì cho ra điểm truy xuất 0%.
+Script in bảng tổng hợp theo nhóm, liệt kê câu chưa đạt và lưu chi tiết từng câu (câu trả lời, tool đã gọi, nhận xét của judge) vào `evals/results/<thời gian>-<target>.json`. Eval tự tắt trace LangSmith, nghỉ 4 giây giữa các câu (`--delay`), và khi OpenRouter/Gemini/Groq báo vượt giới hạn theo phút (429) thì chờ 60 giây rồi thử lại (tối đa 2 lần, cho cả agent lẫn judge). Câu nào vẫn lỗi (hết quota, sai key…) được ghi là lỗi và bỏ khỏi thống kê, không làm dừng cả lần chạy. Nhấn Ctrl+C giữa chừng thì vẫn in và lưu kết quả các câu đã chạy. Trước khi chạy, script kiểm tra Qdrant đã có dữ liệu chưa; collection rỗng thì báo lỗi luôn, thay vì cho ra điểm truy xuất 0%.
 
-Kết quả gần nhất (27/10/2026, `agent.py` + `gemini-3.1-flash-lite`): truy xuất hit@1 96% (24/25, trượt `faq-14`), routing 35/36 (1 câu không chấm routing), keyword 9/9, behavior 8/8, judge 5/5 ở mọi câu, độ trễ trung bình ~11 giây. Điểm cần cải thiện: hơn nửa số câu trả lời dài quá 80 từ; agent không gọi `search_faq` với câu "bị lừa đọc OTP" (`esc-01`).
+Kết quả gần nhất (27/10/2026):
+
+| Model của agent | Số câu chấm được | Kết quả |
+|---|---|---|
+| `nvidia/nemotron-3-ultra-550b-a55b:free` (OpenRouter) | 18/37 (`faq-01` → `faq-18`) | routing 18/18, keyword 2/2, behavior 1/1, judge 5/5, độ trễ TB ~14 giây, 9/18 câu dài quá 80 từ. 19 câu còn lại chưa chấm vì key hết quota ngày của gói free |
+| `gemini-3.1-flash-lite` (model cũ) | 37/37 | routing 35/36, keyword 9/9, behavior 8/8, judge 5/5, độ trễ TB ~11 giây, hơn nửa số câu dài quá 80 từ; không gọi `search_faq` với câu "bị lừa đọc OTP" (`esc-01`) |
+
+Truy xuất không phụ thuộc LLM: hit@1 96% (24/25, trượt `faq-14`).
+
+Với gói free của OpenRouter (~50 request/ngày), một ngày không chạy hết 37 câu. Có thể chạy từng phần qua `--only`, ví dụ phần còn lại của lần trên: `--only faq-19,faq-20,faq-21,escalation,security,rate,branch,web,out_of_scope`.
 
 **Thêm câu hỏi:** thêm một dòng vào `dataset.jsonl`. Nên diễn đạt khác câu trong dữ liệu, và với câu có số liệu thì thêm `must_contain` để kiểm tra cứng.
 
 ## Giới hạn của LLM (gói free)
 
-`agent.py` (web app và graph `agent_main`) dùng **Gemini** (`google_llm`), còn `graph.py` dùng **Groq** (`groq_llm`). Đổi model bằng cách sửa `llm.py`, hoặc tham số `model=` trong `build_agent`.
-
-**Gemini:** giới hạn tính **theo số request mỗi phút cho từng model**. Ví dụ `gemini-3.5-flash` ở gói free chỉ được 5 request/phút, mà mỗi câu hỏi tốn ít nhất 2 request (gọi tool rồi trả lời), nên chỉ được khoảng 2 câu/phút. Model `-lite` có quota riêng. Khi vượt giới hạn, API trả về 429 và ghi `LLM rate limit` vào log.
-
-**Groq:** model `qwen/qwen3.8-27b` ở gói free có các giới hạn sau, tính chung cho mọi người dùng của cùng một API key:
-
-| Giới hạn | Mức | Cách dự án xử lý |
+| LLM trong `llm.py` | Model | Dùng cho |
 |---|---|---|
-| Token đầu ra / phút | 1000 | `llm.py` đặt `max_tokens=512`; câu trả lời thực tế khoảng 15–120 token. Không đặt thì mỗi request bị tính 2048 token, nên luôn lỗi. |
-| Token đầu vào / phút | 7000 | `history.py` cắt bớt lịch sử khi gửi model: chỉ gửi 4 lượt hỏi gần nhất, và rút kết quả tool của các lượt trước còn 300 ký tự. Nhờ vậy mỗi lần gọi chỉ còn khoảng 1100–2800 token. Trước đây, chat vài lượt là vượt 7000 và Groq trả lỗi 413. |
-| Token / ngày | 200.000 | Không xử lý được trong code. Mỗi câu hỏi tốn khoảng 2.500–5.000 token, tức khoảng 50 câu mỗi ngày. Cần nhiều hơn thì nâng gói. |
+| `open_llm` (OpenRouter) | `nvidia/nemotron-3-ultra-550b-a55b:free` | Agent: `agent.py` (web app, graph `agent_main`) và `graph.py` (graph `bank_graph`) |
+| `google_llm` (Gemini) | `gemini-3.1-flash-lite` | Dự phòng của `agent.py` khi OpenRouter lỗi; judge của eval |
+| `groq_llm` (Groq) | `qwen/qwen3.8-27b` | Dự phòng, hiện không dùng |
 
-Khi chạm giới hạn, SDK tự chờ rồi thử lại vài lần. Nếu vẫn không được, API trả về **429** và ghi loại giới hạn vào log (`docker compose logs api | grep "rate limit"`). Lịch sử đầy đủ vẫn được giữ trong bộ nhớ; việc cắt bớt chỉ áp dụng cho phần gửi đi model. Việc cắt bớt này áp dụng cho cả hai model.
+Đổi model của agent bằng cách sửa `llm.py`, hoặc truyền `model=` khác trong `build_agent` (`agent.py`) và `bind_tools` (`graph.py`). Cả 3 client được tạo ngay khi import `llm.py`, nên `.env` phải có đủ cả 3 key.
+
+**Dự phòng:** `build_agent()` gắn `ModelFallbackMiddleware(google_llm)`: lượt nào OpenRouter lỗi (hết quota ngày, quá tải, mất kết nối…) thì lượt đó Gemini trả lời thay, nên web app vẫn chạy được khi OpenRouter hết quota. OpenRouter hết quota thì báo lỗi sau khoảng 1 giây nên khách gần như không phải chờ thêm. Việc chuyển sang Gemini không ghi log; muốn biết model chính có đang lỗi không thì kiểm tra quota (lệnh bên dưới). Chỉ `agent.py` có dự phòng, `graph.py` thì không. Eval gọi `build_agent(fallback=False)` để điểm số phản ánh đúng model chính.
+
+**OpenRouter:** model có hậu tố `:free` bị giới hạn khoảng **20 request/phút** và **50 request/ngày** nếu tài khoản chưa từng nạp đủ 10 USD credit (nạp rồi thì 1000 request/ngày). Mỗi câu hỏi tốn 2–3 request, nên gói free chỉ đủ khoảng 20 câu mỗi ngày, **tính chung cho web app và eval**. Hết quota ngày thì agent chuyển sang Gemini cho tới khi quota reset (00:00 UTC, tức 7:00 sáng giờ Việt Nam). Kiểm tra quota của key: `curl https://openrouter.ai/api/v1/key -H "Authorization: Bearer $OPENROUTER_API_KEY"`.
+
+> **Chú ý:** `ChatOpenRouter` tính `timeout` bằng **mili giây** (`timeout=60_000` là 60 giây), khác `ChatGroq`/`ChatGoogleGenerativeAI` tính bằng giây. Nếu đặt `timeout=60` thì mọi request bị hủy sau 60ms, SDK thử lại liên tục và agent treo vài phút mà không báo lỗi. `tests/test_llm.py` kiểm tra lỗi này.
+
+**Gemini** (judge): giới hạn theo số request mỗi phút cho từng model (vd `gemini-3.1-flash-lite` ở gói free: 15 request/phút). Eval tự chờ và thử lại khi bị 429.
+
+**Groq** (dự phòng): gói free giới hạn 1000 token đầu ra/phút, 7000 token đầu vào/phút và 200.000 token/ngày (khoảng 50 câu hỏi). `llm.py` đặt `max_tokens=512`, vì nếu không đặt thì Groq tính mỗi request 2048 token đầu ra và luôn vượt giới hạn.
+
+**Cắt bớt lịch sử (mọi model):** gửi lại toàn bộ lịch sử thì số token đầu vào tăng mãi, chat vài lượt là vượt giới hạn (Groq trả 413) và chậm dần. `history.py` chỉ gửi model 4 lượt hỏi gần nhất, và rút kết quả tool của các lượt trước còn 300 ký tự; mỗi lần gọi còn khoảng 1100–2800 token. Lịch sử đầy đủ vẫn giữ trong bộ nhớ, chỉ phần gửi đi model bị cắt.
+
+Khi chạm giới hạn, SDK tự chờ rồi thử lại vài lần. Nếu vẫn không được, API trả về **429** và ghi loại giới hạn vào log (`docker compose logs api | grep "rate limit"`).
 
 ## Lưu ý về dữ liệu chi nhánh
 
