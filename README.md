@@ -166,14 +166,14 @@ curl http://localhost:8000/chat -H 'Content-Type: application/json' \
 
 **Giới hạn:** lịch sử hội thoại lưu trong RAM của container (`InMemorySaver`), nên mất khi restart. Vì vậy uvicorn chỉ chạy 1 worker. Muốn chạy nhiều worker hoặc nhiều container thì phải đổi sang checkpointer dùng chung, ví dụ Postgres (`langgraph-checkpoint-postgres`).
 
-### Mạng công ty có SSL inspection
+### Mạng có SSL inspection
 
-Nếu log báo `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain` (ví dụ khi gọi Gemini hoặc gửi trace lên LangSmith), nghĩa là proxy của công ty đang cấp lại chứng chỉ HTTPS bằng CA nội bộ. Khi chạy trên máy, `bank_faqs/__init__.py` đã cho Python dùng kho chứng chỉ Windows (qua `truststore`), vốn đã tin CA này. Container thì không có CA đó. Cách xử lý: xuất CA từ kho chứng chỉ Windows vào thư mục `certs/` rồi build lại image. Dockerfile sẽ cài mọi file `certs/*.crt` vào container. Các file `.crt` này không được commit.
+Nếu log báo `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain` (ví dụ khi gọi Gemini hoặc gửi trace lên LangSmith), nghĩa là proxy của mạng đang cấp lại chứng chỉ HTTPS bằng một CA nội bộ. Khi chạy trên máy, `bank_faqs/__init__.py` đã cho Python dùng kho chứng chỉ Windows (qua `truststore`), vốn đã tin CA này. Container thì không có CA đó. Cách xử lý: xuất CA từ kho chứng chỉ Windows vào thư mục `certs/` rồi build lại image. Dockerfile sẽ cài mọi file `certs/*.crt` vào container. Các file `.crt` này không được commit.
 
 ```powershell
-# PowerShell: đổi 'CN=ten-CA*' thành tên CA của công ty (xem issuer của chứng chỉ bị lỗi)
+# PowerShell: đổi 'CN=ten-CA*' thành tên CA nội bộ (xem issuer của chứng chỉ bị lỗi)
 $c = Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like 'CN=ten-CA*' } | Select-Object -First 1
-"-----BEGIN CERTIFICATE-----`n" + [Convert]::ToBase64String($c.RawData, 'InsertLineBreaks') + "`n-----END CERTIFICATE-----" | Set-Content -Encoding ascii certs\company-ca.crt
+"-----BEGIN CERTIFICATE-----`n" + [Convert]::ToBase64String($c.RawData, 'InsertLineBreaks') + "`n-----END CERTIFICATE-----" | Set-Content -Encoding ascii certs\internal-ca.crt
 docker compose up -d --build api
 ```
 
@@ -281,18 +281,14 @@ Khi chạm giới hạn, SDK tự chờ rồi thử lại vài lần. Nếu vẫ
 
 ## Lưu ý trên Windows
 
-**Lỗi `OSError: [WinError 1114] ... torch\lib\c10.dll`**
+- **Lỗi `OSError: [WinError 1114] ... torch\lib\c10.dll`**
+  - Nguyên nhân: antivirus (vd McAfee) nạp một bản `msvcp140.dll` cũ (14.00) vào process Python, khi Python chạy truy vấn WMI qua module `platform`. `pandas`, `truststore` và `langgraph dev` đều gọi `platform`. `torch` cần bản mới hơn nên không khởi tạo được.
+  - Cách xử lý: tạo file `.pth` trong venv để nạp `msvcp140.dll` của Windows ngay khi Python khởi động. **Chạy lại mỗi khi tạo lại `.venv`:**
 
-Nguyên nhân: trên máy có antivirus như McAfee, khi Python chạy truy vấn WMI (module `platform` làm việc này, và `pandas`, `truststore`, `langgraph dev` đều gọi `platform`), plugin AMSI của antivirus được nạp vào process kèm một bản `msvcp140.dll` rất cũ (14.00). `torch` cần bản mới hơn nên không khởi tạo được.
+    ```bash
+    uv run python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[-1], '_msvcp140_preload.pth').write_text(\"import sys, ctypes; sys.platform == 'win32' and ctypes.WinDLL('msvcp140.dll')\n\")"
+    ```
 
-Cách xử lý: nạp `msvcp140.dll` của Windows ngay khi Python khởi động, bằng một file `.pth` trong venv. **Chạy lại lệnh này mỗi khi tạo lại `.venv`:**
-
-```bash
-uv run python -c "import site, pathlib; pathlib.Path(site.getsitepackages()[-1], '_msvcp140_preload.pth').write_text(\"import sys, ctypes; sys.platform == 'win32' and ctypes.WinDLL('msvcp140.dll')\n\")"
-```
-
-Kiểm tra: `uv run python -c "import pandas, torch"` không báo lỗi là được.
-
-Dự phòng khi chưa có file `.pth`: `src/bank_faqs/__init__.py` cũng nạp trước `msvcp140.dll`, và các file chạy được (`vector_db.py`, `agent.py`, `graph.py`) đều có `import bank_faqs` ở **dòng đầu tiên**, nên `python -m ...` vẫn chạy được. Tuy vậy, chỉ cách này thì không đủ cho `langgraph dev`, vì server import `pandas` trước khi nạp code của dự án.
-
-Nếu chuyển hướng output (pipe, ghi ra file) mà gặp `UnicodeEncodeError` khi in tiếng Việt, đặt biến môi trường `PYTHONUTF8=1`.
+  - Kiểm tra: `uv run python -c "import pandas, torch"` không báo lỗi.
+  - Dự phòng khi chưa có file `.pth`: `src/bank_faqs/__init__.py` cũng nạp trước `msvcp140.dll`. Các file chạy được (`vector_db.py`, `agent.py`, `graph.py`) có `import bank_faqs` ở **dòng đầu tiên**, nên `python -m ...` vẫn chạy được. Cách này không đủ cho `langgraph dev`, vì server import `pandas` trước khi nạp code của dự án.
+- **Lỗi `UnicodeEncodeError` khi in tiếng Việt** (lúc chuyển hướng output sang pipe hoặc file): đặt biến môi trường `PYTHONUTF8=1`.

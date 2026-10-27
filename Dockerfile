@@ -9,7 +9,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# CA nội bộ cho mạng có SSL inspection (proxy công ty cấp lại chứng chỉ HTTPS): đặt file *.crt vào certs/.
+# CA nội bộ cho mạng có SSL inspection (proxy cấp lại chứng chỉ HTTPS): đặt file *.crt vào certs/.
 # Thư mục rỗng thì bước này không làm gì.
 COPY certs/ /usr/local/share/ca-certificates/
 RUN update-ca-certificates

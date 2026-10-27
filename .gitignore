@@ -14,7 +14,7 @@ wheels/
 # Secrets
 .env
 
-# CA nội bộ của mạng công ty (xem README: SSL inspection)
+# CA nội bộ cho mạng có SSL inspection (xem README)
 certs/*.crt
 
 # Virtual environments
