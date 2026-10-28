@@ -299,16 +299,16 @@ Các chỉ số:
 
 Script in bảng tổng hợp theo nhóm, liệt kê câu chưa đạt và lưu chi tiết từng câu (câu trả lời, tool đã gọi, nhận xét của judge) vào `evals/results/<thời gian>-<target>.json`. Eval tự tắt trace LangSmith, nghỉ 4 giây giữa các câu (`--delay`), và khi OpenRouter/Gemini/Groq báo vượt giới hạn theo phút (429) thì chờ 60 giây rồi thử lại (tối đa 2 lần, cho cả agent lẫn judge). Câu nào vẫn lỗi (hết quota, sai key…) được ghi là lỗi và bỏ khỏi thống kê, không làm dừng cả lần chạy. Nhấn Ctrl+C giữa chừng thì vẫn in và lưu kết quả các câu đã chạy. Trước khi chạy, script kiểm tra Qdrant đã có dữ liệu chưa; collection rỗng thì báo lỗi luôn, thay vì cho ra điểm truy xuất 0%.
 
-Kết quả gần nhất (27/10/2026):
+Kết quả gần nhất:
 
 | Model của agent | Số câu chấm được | Kết quả |
 |---|---|---|
-| `nvidia/nemotron-3-ultra-550b-a55b:free` (OpenRouter) | 18/37 (`faq-01` → `faq-18`) | routing 18/18, keyword 2/2, behavior 1/1, judge 5/5, độ trễ TB ~14 giây, 9/18 câu dài quá 80 từ. 19 câu còn lại chưa chấm vì key hết quota ngày của gói free |
-| `gemini-3.1-flash-lite` (model cũ) | 37/37 | routing 35/36, keyword 9/9, behavior 8/8, judge 5/5, độ trễ TB ~11 giây, hơn nửa số câu dài quá 80 từ; không gọi `search_faq` với câu "bị lừa đọc OTP" (`esc-01`) |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` (OpenRouter, 27–28/10/2026, chạy 2 phần vì quota) | 37/37 | routing 36/36, keyword 9/9, behavior 8/8, grounded 37/37, judge TB 4.97/5, độ trễ TB ~13 giây, 19/37 câu dài quá 80 từ. Câu duy nhất dưới 5 điểm: `branch-01` (4 điểm, chưa xưng "em"). Câu chi nhánh và tìm web chậm nhất (~30 giây) |
+| `gemini-3.1-flash-lite` (model cũ, 27/10/2026) | 37/37 | routing 35/36, keyword 9/9, behavior 8/8, judge 5/5, độ trễ TB ~11 giây, hơn nửa số câu dài quá 80 từ; không gọi `search_faq` với câu "bị lừa đọc OTP" (`esc-01`) |
 
 Truy xuất không phụ thuộc LLM: hit@1 96% (24/25, trượt `faq-14`).
 
-Với gói free của OpenRouter (~50 request/ngày), một ngày không chạy hết 37 câu. Có thể chạy từng phần qua `--only`, ví dụ phần còn lại của lần trên: `--only faq-19,faq-20,faq-21,escalation,security,rate,branch,web,out_of_scope`.
+Với gói free của OpenRouter (~50 request/ngày), một ngày không chạy hết 37 câu (cần khoảng 90 request). Chạy từng phần qua `--only`, mỗi ngày một phần, ví dụ `--only faq` rồi hôm sau `--only escalation,security,rate,branch,web,out_of_scope`. Lưu ý: quota dùng chung với web app, nên trong ngày chạy eval thì web app chủ yếu trả lời bằng Gemini dự phòng.
 
 **Thêm câu hỏi:** thêm một dòng vào `dataset.jsonl`. Nên diễn đạt khác câu trong dữ liệu, và với câu có số liệu thì thêm `must_contain` để kiểm tra cứng.
 
