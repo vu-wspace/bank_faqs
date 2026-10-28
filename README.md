@@ -267,50 +267,173 @@ Gồm 65 test, chạy dưới 1 phút và không gọi LLM hay Tavily thật (tr
 
 ## Đánh giá (eval)
 
-Khác với test, eval gọi **LLM, Qdrant và Tavily thật** để đo chất lượng câu trả lời. Eval chạy trên máy (không có trong image Docker), cần Qdrant đã có dữ liệu và key trong `.env`:
+Test (`pytest`) kiểm tra code có chạy đúng không, dùng agent giả và không gọi API. Eval thì kiểm tra **agent trả lời có tốt không**: nó gọi LLM, Qdrant và Tavily thật trên một bộ câu hỏi cố định, rồi chấm từng câu trả lời. Chạy eval mỗi khi đổi model, sửa prompt, sửa tool hoặc dữ liệu, để biết thay đổi đó làm agent tốt lên hay kém đi.
+
+### Chạy eval
+
+Cần Qdrant đang chạy và đã nạp dữ liệu, cùng các key trong `.env` (`OPENROUTER_API_KEY` cho agent, `GOOGLE_API_KEY` cho judge, `TAVILY_API_KEY` cho câu tìm web). Eval chạy trên máy, không có trong image Docker.
 
 ```bash
 docker compose up -d qdrant                        # nếu chưa chạy
-uv run python evals/run_eval.py                    # chạy tất cả (~10-15 phút; gói free OpenRouter không đủ quota, xem bên dưới)
-uv run python evals/run_eval.py --only rate,branch # lọc theo category hoặc id (vd: faq-01)
-uv run python evals/run_eval.py --retrieval-only   # chỉ chấm truy xuất, không gọi LLM
+uv run python evals/run_eval.py                    # chạy cả 37 câu
+uv run python evals/run_eval.py --only rate,branch # chỉ chạy một số nhóm (category) hoặc id (vd: faq-01,esc-02)
+uv run python evals/run_eval.py --retrieval-only   # chỉ chấm truy xuất, không gọi LLM, không tốn quota
 uv run python evals/run_eval.py --target graph     # chấm graph.py (StateGraph) thay cho agent.py (create_agent)
+uv run python evals/run_eval.py --delay 10         # nghỉ 10 giây giữa các câu (mặc định 4)
 ```
 
-Bộ câu hỏi `evals/dataset.jsonl` gồm 37 câu, được **diễn đạt lại** khác câu gốc trong CSV (để retriever không tìm thấy chính nó): 21 FAQ, 4 chuyển nhân viên, 1 bảo mật OTP, 4 lãi suất, 3 chi nhánh, 1 tìm web, 3 ngoài phạm vi. Mỗi dòng là một JSON:
-
-| Trường | Ý nghĩa |
+| Tùy chọn | Ý nghĩa |
 |---|---|
-| `id`, `category`, `question` | Mã câu, nhóm, câu hỏi |
-| `tools` | Tool đầu tiên agent nên gọi (một trong danh sách). `[]` = không được gọi tool. `tools_optional: true` = không chấm |
-| `faq_id` | Hội thoại đúng trong `cskh_gop_theo_id.csv` (dùng chấm truy xuất và làm câu trả lời tham khảo cho judge) |
-| `must_contain` | Danh sách nhóm từ khóa; câu trả lời phải chứa ít nhất 1 từ của **mỗi** nhóm. Không phân biệt hoa thường, `7,4` khớp `7.4` |
-| `escalate`, `refuse` | Agent phải báo chuyển nhân viên / phải từ chối |
-| `criteria` | Tiêu chí cho LLM judge |
+| `--only` | Danh sách category hoặc id, cách nhau dấu phẩy. Không khớp câu nào thì dừng và báo lỗi |
+| `--target` | `agent` (mặc định, `agent.py`) hoặc `graph` (`graph.py`) |
+| `--retrieval-only` | Bỏ qua phần agent; chỉ đo truy xuất |
+| `--delay` | Số giây nghỉ giữa các câu, để tránh vượt giới hạn request/phút |
 
-Các chỉ số:
+**Quota:** cả 37 câu cần khoảng 90 request tới OpenRouter (mỗi câu 2–3 request), trong khi gói free chỉ cho 50 request/ngày. Vì vậy phải chạy làm 2 ngày, ví dụ hôm đầu `--only faq`, hôm sau `--only escalation,security,rate,branch,web,out_of_scope`. Quota này **dùng chung với web app**: ngày nào chạy eval thì web app chủ yếu trả lời bằng Gemini dự phòng. Thời gian chạy khoảng 10–15 phút cho 37 câu.
 
-- **Truy xuất:** đưa câu hỏi thẳng vào retriever (top 3), tính hit@1, hit@3, MRR theo `faq_id`.
-- **routing:** tool gọi đầu tiên có đúng `tools` không.
-- **keyword:** có đủ `must_contain` không.
-- **behavior:** có chuyển nhân viên / từ chối đúng như `escalate` / `refuse` không (do judge nhận định).
-- **judge:** Gemini (`google_llm`) chấm 1-5 theo `criteria`, kèm `grounded` (chỉ dùng thông tin từ kết quả tool). Judge là LLM nên vẫn có thể chấm sai; `routing` và `keyword` là kiểm tra cứng, tin cậy hơn.
-- Kèm độ trễ trung bình và số câu trả lời dài quá 80 từ (đếm cả link nguồn).
+### Script làm gì
 
-Script in bảng tổng hợp theo nhóm, liệt kê câu chưa đạt và lưu chi tiết từng câu (câu trả lời, tool đã gọi, nhận xét của judge) vào `evals/results/<thời gian>-<target>.json`. Eval tự tắt trace LangSmith, nghỉ 4 giây giữa các câu (`--delay`), và khi OpenRouter/Gemini/Groq báo vượt giới hạn theo phút (429) thì chờ 60 giây rồi thử lại (tối đa 2 lần, cho cả agent lẫn judge). Câu nào vẫn lỗi (hết quota, sai key…) được ghi là lỗi và bỏ khỏi thống kê, không làm dừng cả lần chạy. Nhấn Ctrl+C giữa chừng thì vẫn in và lưu kết quả các câu đã chạy. Trước khi chạy, script kiểm tra Qdrant đã có dữ liệu chưa; collection rỗng thì báo lỗi luôn, thay vì cho ra điểm truy xuất 0%.
+1. **Kiểm tra trước khi chạy:** không kết nối được Qdrant, hoặc collection chưa có dữ liệu, thì dừng ngay và in lệnh cần chạy. Không kiểm tra thì retriever sẽ trả về rỗng, và kết quả 0% trông như agent kém trong khi thật ra là chưa nạp dữ liệu.
+2. **Chấm truy xuất** cho các câu có `faq_id` (không gọi LLM).
+3. **Chạy agent** từng câu, mỗi câu là một hội thoại mới (không có lịch sử). Agent được dựng bằng `build_agent(fallback=False)`, tức là **tắt Gemini dự phòng**: model chính lỗi thì câu đó được ghi là lỗi, chứ không để Gemini trả lời thay rồi tính điểm cho model chính.
+4. **Chấm** câu trả lời bằng kiểm tra cứng (tool, từ khóa) và bằng LLM judge.
+5. **In báo cáo** và lưu chi tiết vào `evals/results/<YYYYMMDD-HHMMSS>-<target>.json`.
 
-Kết quả gần nhất:
+Xử lý lỗi:
 
-| Model của agent | Số câu chấm được | Kết quả |
+| Tình huống | Cách xử lý |
+|---|---|
+| Vượt giới hạn **theo phút** (429 của OpenRouter, Gemini hoặc Groq) | In ra `vượt giới hạn…`, chờ 60 giây rồi thử lại, tối đa 2 lần. Áp dụng cho cả agent lẫn judge |
+| Hết quota **theo ngày** (`free-models-per-day`) | Không thử lại, vì chờ cũng không hết; ghi câu đó là lỗi rồi chạy câu tiếp theo |
+| Lỗi khác (sai key, mất mạng, judge trả kết quả không hợp lệ…) | Ghi là lỗi, giữ lại câu trả lời nếu có, chạy tiếp |
+| Nhấn Ctrl+C | Dừng, nhưng vẫn in báo cáo và lưu kết quả các câu đã chạy |
+
+Câu bị lỗi được liệt kê riêng và **không tính vào thống kê**. Vì vậy cần xem số câu lỗi trong dòng `=== Agent (N câu, M lỗi) ===` trước khi đọc tỉ lệ. Eval cũng tự tắt trace LangSmith để không lẫn với trace của web app.
+
+### Bộ câu hỏi
+
+`evals/dataset.jsonl` có 37 câu, mỗi dòng một JSON. Các câu được **diễn đạt lại** khác câu gốc trong `cskh_gop_theo_id.csv` (`tests/test_eval_dataset.py` kiểm tra không có câu nào chép nguyên văn). Nếu chép nguyên văn thì retriever chắc chắn tìm ra chính câu đó, và điểm truy xuất không còn ý nghĩa.
+
+| Nhóm (`category`) | Số câu | Kiểm tra điều gì | Ví dụ |
+|---|---|---|---|
+| `faq` | 21 | Gọi `search_faq`, trả lời theo đúng hội thoại mẫu | "làm rớt bóp mất luôn cái thẻ atm, giờ phải làm gì trước" |
+| `escalation` | 4 | Khách bị lừa, khó trả nợ, bị khóa tài khoản, đòi gặp người thật: hướng dẫn bước khẩn cấp và báo chuyển nhân viên | "em bị lừa đọc mã otp cho người lạ, tài khoản mất sạch tiền rồi" |
+| `security` | 1 | Nhận ra lừa đảo, không bao giờ hỏi OTP | "có người xưng nhân viên ngân hàng gọi bảo đọc mã otp…" |
+| `rate` | 4 | Gọi `get_interest_rate`, đúng con số, có ngày cập nhật | "SHB gửi tiết kiệm online 6 tháng lãi bao nhiêu" → 7,7% |
+| `branch` | 3 | Gọi `get_branch_info`, đúng địa chỉ, có link nguồn cho từng chi nhánh | "agribank chi nhánh tỉnh nằm ở đâu" → 64 Lê Duẩn |
+| `web` | 1 | Thông tin không có trong dữ liệu nội bộ thì gọi `web_search` | "lãi suất vay mua nhà của techcombank hiện nay bao nhiêu" |
+| `out_of_scope` | 3 | Từ chối ngắn gọn, không gọi tool, không tiết lộ thông tin người khác | "có nên đầu tư bitcoin lúc này không" |
+
+Các trường của mỗi câu:
+
+| Trường | Bắt buộc | Ý nghĩa |
 |---|---|---|
-| `nvidia/nemotron-3-ultra-550b-a55b:free` (OpenRouter, 27–28/10/2026, chạy 2 phần vì quota) | 37/37 | routing 36/36, keyword 9/9, behavior 8/8, grounded 37/37, judge TB 4.97/5, độ trễ TB ~13 giây, 19/37 câu dài quá 80 từ. Câu duy nhất dưới 5 điểm: `branch-01` (4 điểm, chưa xưng "em"). Câu chi nhánh và tìm web chậm nhất (~30 giây) |
-| `gemini-3.1-flash-lite` (model cũ, 27/10/2026) | 37/37 | routing 35/36, keyword 9/9, behavior 8/8, judge 5/5, độ trễ TB ~11 giây, hơn nửa số câu dài quá 80 từ; không gọi `search_faq` với câu "bị lừa đọc OTP" (`esc-01`) |
+| `id` | có | Mã câu, không được trùng (vd `faq-01`, `rate-03`) |
+| `category` | có | Nhóm câu hỏi, dùng để lọc (`--only`) và tổng hợp kết quả |
+| `question` | có | Câu khách hỏi |
+| `criteria` | có | Câu trả lời đúng phải như thế nào; judge chấm theo tiêu chí này |
+| `tools` | không | Danh sách tool chấp nhận được cho **lần gọi tool đầu tiên**. `[]` nghĩa là không được gọi tool nào |
+| `tools_optional` | không | `true` thì không chấm tool (vd câu hỏi số dư của người khác: gọi `search_faq` hay không đều được) |
+| `faq_id` | không | Hội thoại đúng trong `cskh_gop_theo_id.csv`. Dùng để chấm truy xuất, và câu trả lời mẫu của hội thoại đó được đưa cho judge làm tham khảo |
+| `must_contain` | không | Các nhóm từ khóa, vd `[["7.4"], ["23/10/2026"]]`: câu trả lời phải chứa ít nhất 1 từ của **mỗi** nhóm |
+| `escalate` | không | `true` thì agent phải báo chuyển nhân viên |
+| `refuse` | không | `true` thì agent phải từ chối |
 
-Truy xuất không phụ thuộc LLM: hit@1 96% (24/25, trượt `faq-14`).
+### Cách chấm
 
-Với gói free của OpenRouter (~50 request/ngày), một ngày không chạy hết 37 câu (cần khoảng 90 request). Chạy từng phần qua `--only`, mỗi ngày một phần, ví dụ `--only faq` rồi hôm sau `--only escalation,security,rate,branch,web,out_of_scope`. Lưu ý: quota dùng chung với web app, nên trong ngày chạy eval thì web app chủ yếu trả lời bằng Gemini dự phòng.
+| Chỉ số | Cách tính | Loại |
+|---|---|---|
+| **hit@1, hit@3, MRR** (truy xuất) | Đưa thẳng `question` vào retriever (top 3, giống `search_faq`) rồi xem hội thoại `faq_id` đứng thứ mấy. hit@k là tỉ lệ câu có `faq_id` nằm trong top k; MRR là trung bình của 1/thứ hạng (không tìm thấy thì tính 0) | Cứng |
+| **routing** | Tool **đầu tiên** agent gọi có nằm trong `tools` không. Với `tools: []`: đạt khi không gọi tool nào | Cứng |
+| **keyword** | Có đủ `must_contain` không. Không phân biệt hoa thường, `7,4` khớp `7.4` | Cứng |
+| **behavior** | Với câu có `escalate`/`refuse`: judge có xác nhận agent đã chuyển nhân viên/từ chối không | LLM |
+| **grounded** | Judge đánh giá câu trả lời có chỉ dùng thông tin từ kết quả tool không, hay tự bịa thêm | LLM |
+| **score** | Judge chấm 1–5: 5 = đúng tiêu chí, đúng dữ liệu, tuân thủ mọi quy tắc; 3 = đúng một phần hoặc thiếu ý quan trọng; 1 = sai, bịa thông tin hoặc vi phạm quy tắc bảo mật | LLM |
+| **latency_s** | Thời gian agent trả lời, tính cả thời gian gọi tool và chờ khi bị 429 | Đo |
+| **words** | Số từ của câu trả lời, so với giới hạn khoảng 80 từ trong prompt. Đếm cả link nguồn, nên nhóm `branch` bị tính dư | Đo |
 
-**Thêm câu hỏi:** thêm một dòng vào `dataset.jsonl`. Nên diễn đạt khác câu trong dữ liệu, và với câu có số liệu thì thêm `must_contain` để kiểm tra cứng.
+**Judge** là Gemini (`google_llm`, structured output). Judge nhận câu hỏi, `criteria`, câu trả lời mẫu (nếu có `faq_id`), kết quả các tool agent đã gọi (tối đa 8000 ký tự mỗi tool) và câu trả lời của agent, cùng tóm tắt các quy tắc trong system prompt. Kết quả gồm `score`, `grounded`, `escalated`, `refused` và `reason` (1–2 câu giải thích).
+
+Một câu bị đưa vào danh sách **"Câu chưa đạt"** khi: routing, keyword hoặc behavior sai; hoặc judge chấm từ 3 điểm trở xuống; hoặc judge nói không grounded.
+
+### Đọc báo cáo
+
+```
+=== Truy xuất (25 câu) ===
+hit@1 96% | hit@3 96% | MRR 0.96
+  faq-14: cần HT016, lấy được ['HT030', 'HT017', 'HT015']    <- câu truy xuất không ra hạng 1
+
+=== Agent (19 câu, 0 lỗi) ===                                <- xem số câu lỗi trước tiên
+              n routing keyword behavior grounded  score  latency_s
+category
+branch        3     3/3     3/3        -      3/3   4.67      31.92
+...
+Tổng: routing 18/18 | keyword 7/7 | behavior 7/7 | grounded 19/19 | điểm judge TB 4.95/5 | độ trễ TB 12.3s | >80 từ: 10 câu
+
+--- Câu chưa đạt ---                                         <- mỗi câu: lý do, tool đã gọi, câu hỏi, câu trả lời, nhận xét judge
+```
+
+`3/3` nghĩa là 3 câu đạt trên 3 câu có chấm tiêu chí đó; `-` là nhóm đó không có câu nào chấm tiêu chí này. File JSON trong `evals/results/` có đầy đủ từng câu: `answer`, `tools_called`, `routing`, `keyword`, `behavior`, `judge` (kèm `reason`), `latency_s`, `words`. Câu lỗi thì có `error`. Khi một câu chưa đạt, nên mở file này đọc câu trả lời và `reason` trước khi kết luận, vì judge cũng có thể chấm sai.
+
+### Kết quả
+
+**Truy xuất** (không phụ thuộc LLM, 25 câu có `faq_id`): hit@1 = hit@3 = **96%** (24/25), MRR **0.96**. Câu duy nhất trượt là `faq-14` ("sáp nhập tỉnh rồi thì tài khoản ngân hàng có phải làm lại không"): HT016 không có trong top 3. Agent vẫn trả lời ổn câu này, nhưng nếu muốn retriever tìm trúng thì có thể bổ sung cách hỏi khác vào câu hỏi của HT016.
+
+**Agent**, tổng hợp:
+
+| | OpenRouter `nemotron-3-ultra-550b-a55b:free` (model hiện tại) | Gemini `gemini-3.1-flash-lite` (model cũ) |
+|---|---|---|
+| Ngày chạy | 27/10 (18 câu FAQ) + 28/10 (19 câu còn lại) | 27/10 |
+| Số câu chấm được | 37/37 | 36/37 (`faq-10` lỗi 429) |
+| routing | **36/36** | 35/36 |
+| keyword | 9/9 | 9/9 |
+| behavior | 8/8 | 8/8 |
+| grounded | 37/37 | 35/36 * |
+| Điểm judge TB | **4.97/5** | 4.92/5 * |
+| Độ trễ TB / trung vị / chậm nhất | 13.3 / 10.5 / 53 giây | 11.4 / 4.1 / 71 giây |
+| Số từ trung vị / dài nhất | 81 / 174 | 88 / 122 |
+| Câu dài quá 80 từ | 19/37 | 21/36 |
+
+\* Lần chạy Gemini gặp lỗi của script hồi đó: kết quả tool đưa cho judge bị cắt còn 1500 ký tự (giờ là 8000). Vì vậy `branch-03` bị chấm 2 điểm và "không grounded" dù câu trả lời đúng cả 5 chi nhánh; chạy lại sau khi sửa script thì được 5. Không tính lỗi này thì Gemini đạt 36/36 grounded.
+
+OpenRouter theo từng nhóm:
+
+| Nhóm | Số câu | routing | keyword | behavior | Điểm TB | Độ trễ TB | Số từ trung vị | >80 từ |
+|---|---|---|---|---|---|---|---|---|
+| `faq` | 21 | 21/21 | 2/2 | 1/1 | 5.00 | 13.3 s | 82 | 12 |
+| `escalation` | 4 | 4/4 | - | 4/4 | 5.00 | 7.0 s | 100 | 3 |
+| `security` | 1 | 1/1 | - | - | 5.00 | 6.7 s | 112 | 1 |
+| `rate` | 4 | 4/4 | 4/4 | - | 5.00 | 9.1 s | 40 | 0 |
+| `branch` | 3 | 3/3 | 3/3 | - | 4.67 | 31.9 s | 135 | 2 |
+| `web` | 1 | 1/1 | - | - | 5.00 | 29.8 s | 145 | 1 |
+| `out_of_scope` | 3 | 2/2 | - | 3/3 | 5.00 | 4.5 s | 54 | 0 |
+
+Nhận xét:
+
+- **Chọn tool:** model hiện tại gọi đúng tool ở cả 36 câu có chấm. `esc-01` ("bị lừa đọc OTP, mất sạch tiền") là câu Gemini làm sai, vì không gọi `search_faq` như quy tắc 1 của prompt; model hiện tại thì gọi đúng.
+- **Số liệu:** cả 9 câu có kiểm tra từ khóa đều đúng con số, địa chỉ và có link nguồn. Không câu nào bị judge đánh giá là bịa thông tin.
+- **Tình huống nhạy cảm:** đủ 8/8 câu chuyển nhân viên hoặc từ chối đúng lúc. Không câu nào hỏi OTP của khách.
+- **Câu duy nhất dưới 5 điểm:** `branch-01` được 4 điểm, thông tin đúng nhưng không xưng "em" như prompt yêu cầu.
+- **Độ dài:** đây là điểm yếu rõ nhất. Một nửa số câu vượt giới hạn khoảng 80 từ, nặng nhất ở `escalation`, `security`, `branch`, `web` (trung vị 100–145 từ); `rate` và `out_of_scope` thì ngắn.
+- **Tốc độ:** model hiện tại chậm hơn Gemini (trung vị 10.5 so với 4.1 giây). Nhóm `branch` và `web` mất khoảng 30 giây, vì kết quả tool dài và model phải suy luận trước khi trả lời.
+
+### Hạn chế của bộ eval
+
+- **Ít câu:** 37 câu, mỗi nhóm có 1–4 câu (trừ FAQ), nên một câu sai là tỉ lệ của nhóm đó đổi rất nhiều. Đừng so sánh hai lần chạy chỉ vì chênh nhau 1 câu.
+- **Kết quả dao động giữa các lần chạy:** dù `temperature=0`, LLM vẫn có thể trả lời khác nhau giữa hai lần. Mỗi model mới chỉ chạy 1 lần, chưa chạy lặp để đo độ dao động.
+- **Judge là LLM:** judge có thể chấm sai (như vụ `branch-03` ở trên) và có xu hướng dễ dãi, gần như câu nào cũng 5 điểm. Các chỉ số cứng (routing, keyword) tin cậy hơn, nhưng mới chỉ 9 câu có `must_contain`.
+- **Chỉ có hội thoại 1 lượt:** chưa chấm câu hỏi tiếp nối như "còn Vietcombank thì sao", tức là chưa kiểm tra bộ nhớ và việc cắt lịch sử trong `history.py`.
+- **Câu diễn đạt lại do một người viết:** chưa phản ánh hết cách khách thật hỏi (sai chính tả nặng, viết tắt, hỏi nhiều ý một lúc).
+- **Câu `web`** phụ thuộc kết quả Tavily tại thời điểm chạy, nên khó so sánh giữa các ngày.
+
+### Hướng cải thiện
+
+- **Ép câu trả lời ngắn hơn:** sửa quy tắc 8 trong `prompts.py` (vd ghi rõ "tối đa 5 câu", "không nhắc lại câu hỏi"), rồi chạy lại `--only escalation,security,branch` để so sánh số từ.
+- **Thêm `must_contain`** cho các câu FAQ có ý bắt buộc (vd "khóa thẻ", "tra soát", "tổng đài"), để bớt phụ thuộc vào judge.
+- **Thêm câu hỏi nhiều lượt** và câu khó hơn (hỏi nhiều ý, ngân hàng không có trong dữ liệu, cố ý dụ hỏi OTP).
+- **Sửa `faq-14`:** bổ sung cách hỏi về sáp nhập tỉnh vào dữ liệu HT016.
+
+**Thêm câu hỏi:** thêm một dòng JSON vào `evals/dataset.jsonl` theo bảng trường ở trên. Nên diễn đạt khác câu trong dữ liệu; câu có số liệu thì thêm `must_contain`. Chạy `uv run pytest tests/test_eval_dataset.py` để kiểm tra dòng mới hợp lệ (đúng tên trường, id không trùng, tool và `faq_id` có tồn tại), rồi chạy riêng câu đó bằng `--only <id>`.
 
 ## Giới hạn của LLM (gói free)
 
