@@ -1,46 +1,163 @@
 # bank-faqs
 
-Agent chăm sóc khách hàng ngân hàng bằng tiếng Việt, xây dựng với LangChain/LangGraph. Agent trả lời câu hỏi về thẻ, tài khoản, chuyển tiền, tiết kiệm, vay, lừa đảo, ứng dụng ngân hàng, lãi suất tiết kiệm và địa chỉ chi nhánh tại Quy Nhơn. Câu trả lời dựa trên dữ liệu nội bộ; agent chỉ tìm trên web khi dữ liệu nội bộ không có. Có kèm web chat (FastAPI) chạy bằng Docker.
+Agent chăm sóc khách hàng (CSKH) ngân hàng bằng tiếng Việt, xây dựng với LangChain/LangGraph. Agent trả lời câu hỏi về thẻ, tài khoản, chuyển tiền, tiết kiệm, vay, lừa đảo, ứng dụng ngân hàng, lãi suất tiết kiệm và địa chỉ chi nhánh tại Quy Nhơn.
+
+- Câu trả lời dựa trên **dữ liệu nội bộ**: 34 hội thoại CSKH mẫu (tìm bằng vector search trong Qdrant), bảng lãi suất của 17 ngân hàng và danh sách 23 chi nhánh. Agent chỉ tìm trên web khi dữ liệu nội bộ không có câu trả lời.
+- Có **web chat** (FastAPI) chạy bằng Docker, nhớ ngữ cảnh hội thoại.
+- LLM chính là OpenRouter (`nvidia/nemotron-3-ultra-550b-a55b:free`). Khi OpenRouter lỗi hoặc hết quota, agent **tự chuyển sang Gemini**.
+- Có **65 test** (không gọi API thật) và **bộ eval 37 câu** để đo chất lượng câu trả lời.
+
+Chạy nhanh (cần Docker và file `.env`, xem [Cài đặt](#cài-đặt)):
+
+```bash
+docker compose up -d --build   # build image, chạy Qdrant + web app, tự nạp dữ liệu
+# mở http://localhost:8000
+```
+
+## Mục lục
+
+- [Cách hoạt động](#cách-hoạt-động)
+- [Các tool](#các-tool)
+- [Dữ liệu](#dữ-liệu)
+- [Cấu trúc thư mục](#cấu-trúc-thư-mục)
+- [Yêu cầu](#yêu-cầu)
+- [Cài đặt](#cài-đặt)
+- [Deploy bằng Docker](#deploy-bằng-docker)
+- [Chạy trên máy không dùng Docker](#chạy-trên-máy-không-dùng-docker)
+- [Web app và API](#web-app-và-api)
+- [Test](#test)
+- [Đánh giá (eval)](#đánh-giá-eval)
+- [Giới hạn của LLM (gói free)](#giới-hạn-của-llm-gói-free)
+- [Mở rộng dự án](#mở-rộng-dự-án)
+- [Xử lý sự cố](#xử-lý-sự-cố)
+- [Lưu ý về dữ liệu chi nhánh](#lưu-ý-về-dữ-liệu-chi-nhánh)
+- [Lưu ý trên Windows](#lưu-ý-trên-windows)
 
 ## Cách hoạt động
 
 ```
-Khách hỏi ──> Agent (OpenRouter · nvidia/nemotron-3-ultra-550b-a55b:free; lỗi/hết quota thì dùng Gemini)
-                 │
-                 ├── search_faq         Tìm hội thoại CSKH tương tự trong Qdrant (thủ tục, xử lý sự cố)
-                 ├── get_interest_rate  Tra bảng lãi suất tiết kiệm (CSV)
-                 ├── get_branch_info    Tra địa chỉ, số điện thoại chi nhánh tại Quy Nhơn (CSV), kèm nguồn
-                 └── web_search         Tavily – chỉ khi các tool trên không có câu trả lời
+Trình duyệt (trang chat)                    LangGraph Studio (langgraph dev)
+        │ POST /chat                                   │
+        ▼                                              ▼
+FastAPI (api.py) ── nhớ hội thoại theo thread_id ──> Agent (agent.py: create_agent, hoặc graph.py: StateGraph)
+                                                       │
+                     LLM: OpenRouter nemotron-3-ultra-550b-a55b:free ── lỗi/hết quota ──> Gemini gemini-3.1-flash-lite
+                                                       │ gọi tool
+        ┌───────────────────────┬──────────────────────┼─────────────────────────┐
+        ▼                       ▼                      ▼                         ▼
+   search_faq           get_interest_rate        get_branch_info             web_search
+ Qdrant (34 hội thoại,   CSV lãi suất           CSV chi nhánh               Tavily
+ embedding bkai)         17 ngân hàng           23 chi nhánh, có nguồn      (3 kết quả)
 ```
 
-Quy tắc hành vi của agent (system prompt trong `prompts.py`):
+### Luồng xử lý một câu hỏi
 
-- Xưng "em", gọi khách là "anh/chị", trả lời ngắn gọn (~80 từ, không tính phần nguồn).
-- Chỉ trả lời dựa trên kết quả tool, không tự đoán số liệu (phí, lãi suất, số điện thoại, giờ làm việc…).
-- Thông tin chi nhánh: mỗi chi nhánh được nhắc tới phải kèm link nguồn.
-- Khách bị lừa đảo, mất tiền, khóa tài khoản…: hướng dẫn bước khẩn cấp rồi chuyển nhân viên.
-- Không bao giờ hỏi OTP, mật khẩu, PIN.
-- Từ chối câu hỏi ngoài phạm vi (tư vấn đầu tư vàng, cổ phiếu…).
+1. Trang chat gửi `POST /chat` với `message` và `thread_id` (bỏ trống ở tin nhắn đầu tiên).
+2. `api.py` lấy lịch sử của `thread_id` từ bộ nhớ (`InMemorySaver`), thêm tin nhắn mới rồi gọi agent.
+3. Trước mỗi lần gọi LLM, `history.py` **cắt bớt lịch sử** gửi đi: chỉ giữ 4 lượt hỏi gần nhất, kết quả tool của các lượt cũ rút còn 300 ký tự. State trong bộ nhớ vẫn giữ đầy đủ.
+4. LLM đọc system prompt (`prompts.py`) và mô tả các tool (docstring của hàm `@tool` trong `tools.py`), rồi quyết định gọi tool nào. Agent có thể gọi nhiều tool liên tiếp trong một lượt.
+5. Tool trả kết quả dạng văn bản. LLM soạn câu trả lời chỉ dựa trên kết quả đó.
+6. Nếu OpenRouter lỗi (hết quota, quá tải, mất kết nối…), lần gọi đó được chuyển sang Gemini (`ModelFallbackMiddleware`).
+7. API trả về `answer`, `thread_id` và danh sách `tools` đã gọi trong lượt này. Trang chat hiển thị câu trả lời, link bấm được và dòng "Đã tra cứu: …".
+
+### Quy tắc của agent
+
+System prompt nằm trong `src/bank_faqs/prompts.py` (`AGENT_PROMPTS['agent_main']`), gồm 12 quy tắc:
+
+| Nhóm | Quy tắc |
+|---|---|
+| Xưng hô | Luôn trả lời tiếng Việt, lịch sự, xưng "em", gọi khách là "anh/chị", không đoán giới tính của khách |
+| Dùng tool | (1) Thủ tục, thẻ, tài khoản, chuyển tiền, tiết kiệm, vay, lừa đảo → gọi `search_faq` trước. (2) Lãi suất tiết kiệm → `get_interest_rate`, nêu ngày cập nhật. (3) Chi nhánh, địa chỉ, số điện thoại → `get_branch_info`, mỗi chi nhánh kèm link nguồn. (4) Chỉ gọi `web_search` khi các tool trên không có câu trả lời. (5) Xem kết quả các lần gọi trước xem đã đủ thông tin chưa rồi mới gọi tiếp |
+| Trả lời | (6) Chỉ dựa trên kết quả tool, không tự đoán phí, hạn mức, lãi suất, số điện thoại, giờ làm việc. (7) Không tìm thấy thì nói rõ là chưa có thông tin và hướng dẫn khách xem trên app hoặc liên hệ chi nhánh. (8) Ngắn gọn, tối đa khoảng 80 từ (không tính phần nguồn); có nhiều bước thì liệt kê theo thứ tự |
+| Chuyển nhân viên | (9) Khách bị lừa đảo, mất tiền, bị khóa tài khoản, khó khăn trả nợ, hoặc muốn gặp người thật: hướng dẫn bước khẩn cấp (vd khóa thẻ) rồi báo sẽ chuyển nhân viên |
+| Bảo mật | (10) Không bao giờ hỏi OTP, mật khẩu, mã PIN. (11) Không cung cấp thông tin tài khoản của người khác |
+| Ngoài phạm vi | (12) Không tư vấn đầu tư (vàng, cổ phiếu, tiền số…) hay chủ đề không liên quan dịch vụ ngân hàng: không gọi tool, từ chối trong 1–2 câu, hỏi khách có cần hỗ trợ khác không |
+
+`agent.py` (`create_agent`) và `graph.py` (`StateGraph` tự dựng: `model → tools → model … → END`) dùng chung LLM, tool, system prompt và cách cắt lịch sử. Hai bản chỉ khác cách dựng; riêng `agent.py` có Gemini dự phòng. Web app dùng `agent.py`.
 
 ## Các tool
 
 | Tool | Nguồn dữ liệu | Dùng khi |
 |---|---|---|
 | `search_faq(query)` | Qdrant, top 3 hội thoại tương tự | Thủ tục, xử lý sự cố |
-| `get_interest_rate(bank='')` | `data/raw/lai_suat_ngan_hang_23-10-2026.csv` | Lãi suất tiết kiệm online/tại quầy, kỳ hạn 1–36 tháng. Để trống `bank` để lấy bảng so sánh mọi ngân hàng |
-| `get_branch_info(bank='', street='')` | `data/raw/chi_nhanh_ngan_hang_quy_nhon.csv` | Địa chỉ, số điện thoại của 23 chi nhánh (18 ngân hàng) tại Quy Nhơn. Lọc theo ngân hàng và/hoặc tên đường; để trống cả hai để lấy toàn bộ |
-| `web_search(query)` | Tavily, 3 kết quả | Khuyến mãi, tin tức, lãi suất vay, ngân hàng không có trong dữ liệu |
+| `get_interest_rate(bank='')` | `data/raw/lai_suat_ngan_hang_23-10-2026.csv` | Lãi suất tiết kiệm online/tại quầy, kỳ hạn 1–36 tháng |
+| `get_branch_info(bank='', street='')` | `data/raw/chi_nhanh_ngan_hang_quy_nhon.csv` | Địa chỉ, số điện thoại chi nhánh tại Quy Nhơn |
+| `web_search(query)` | Tavily, 3 kết quả, timeout 30 giây | Khuyến mãi, tin tức, lãi suất vay, ngân hàng không có trong dữ liệu |
 
-- `get_interest_rate` và `get_branch_info` nhận tên ngân hàng không dấu, viết tắt, tên cũ hoặc có tiền tố "ngân hàng" (`vcb`, `Vietin`, `mb bank`, `bac a`, `ngân hàng Techcom`, `oceanbank`…). Danh sách tên tắt nằm trong `BANK_ALIASES` ở `tools.py`. Tên đường cũng so khớp không dấu (`le duan` khớp "Lê Duẩn").
-- `get_branch_info` trả về cho từng chi nhánh: địa chỉ theo nguồn, phường mới (sau sáp nhập 1/7/2025), điện thoại, giờ làm việc, **độ tin cậy** và **URL nguồn**. Ô ghi "Chưa có nguồn" hoặc bỏ trống trong CSV được trả về là "chưa có thông tin", để model không tự bịa. Trong câu trả lời, agent ghi link nguồn cạnh từng chi nhánh, và trang chat hiển thị link bấm được.
-- `search_faq` và `web_search` tự bắt lỗi (Qdrant sập, Tavily timeout…) và trả thông báo lỗi cho model, thay vì làm hỏng cả lượt hội thoại.
+**`search_faq`**: embedding câu hỏi của khách, tìm 3 hội thoại có câu hỏi gần nhất trong Qdrant, rồi trả về từng cặp `Hỏi: … / Đáp: …`. Không tìm thấy thì trả "Không tìm thấy câu trả lời trong dữ liệu nội bộ."
 
-**Cập nhật dữ liệu:**
-- **Lãi suất:** đặt file CSV mới vào `data/raw/` (giữ nguyên tên cột), rồi sửa `RATE_FILE` và `RATE_DATE` trong `config.py`.
-- **Chi nhánh:** sửa trực tiếp `data/raw/chi_nhanh_ngan_hang_quy_nhon.csv` (giữ nguyên tên cột). Cột `Nguồn` có thể chứa nhiều URL, phân cách bằng `;`. Ô chưa có dữ liệu thì ghi "Chưa có nguồn" hoặc để trống; cả hai đều được trả về là "chưa có thông tin".
-- **Hội thoại CSKH:** sửa `data/raw/cskh_hoi_thoai_ngan_hang.csv`, rồi chạy lại bước [nạp dữ liệu](#chạy-trên-máy-không-docker).
+**`get_interest_rate`**:
+- Để trống `bank`: trả bảng lãi suất **online** của cả 17 ngân hàng, dùng khi khách hỏi so sánh hoặc hỏi ngân hàng nào cao nhất.
+- Có `bank`: trả lãi suất online và tại quầy, kỳ hạn 1, 3, 6, 12, 18, 24, 36 tháng, kèm ngày cập nhật. Ví dụ `get_interest_rate('bidv')`:
+  ```
+  BIDV (cập nhật 23/10/2026, T = tháng):
+  - Online: 1T 4.8%, 3T 4.8%, 6T 7.2%, 12T 7.4%, 18T 6.6%, 24T 6.8%, 36T 6.8%
+  - Tại quầy: 1T 2.1%, 3T 2.4%, 6T 3.5%, 12T 5.9%, 18T 5.9%, 24T 6%, 36T 6%
+  ```
+- Kỳ hạn không có số liệu thì ghi "không có". Ngân hàng không có trong dữ liệu thì trả danh sách các ngân hàng đang có.
 
-**Thêm tool mới:** viết hàm `@tool` trong `tools.py`; docstring của hàm chính là mô tả mà model đọc để quyết định khi nào gọi tool. Sau đó thêm vào `TOOLS` và `AGENT_TOOLS` ở cuối `tools.py`, rồi bổ sung quy tắc dùng tool trong `prompts.py`.
+**`get_branch_info`**: lọc theo ngân hàng và/hoặc tên đường; để trống cả hai thì lấy cả 23 chi nhánh. Mỗi chi nhánh có: địa chỉ theo nguồn, phường mới (sau sáp nhập 1/7/2025), điện thoại, giờ làm việc, **độ tin cậy** và **URL nguồn** (có thể nhiều URL). Kết quả kèm lời dặn model phải ghi nguồn và không tự bổ sung thông tin còn thiếu. Ô ghi "Chưa có nguồn" hoặc để trống được trả về là "chưa có thông tin", để model không tự bịa.
+
+**Nhận diện tên ngân hàng** (dùng cho `get_interest_rate` và `get_branch_info`):
+1. Chuẩn hóa: chữ thường, bỏ dấu (`đ` → `d`), bỏ ký tự không phải chữ/số, bỏ tiền tố "ngân hàng". Ví dụ "Ngân hàng Bắc Á" → `baca`.
+2. Đổi tên gọi tắt sang tên chuẩn theo `BANK_ALIASES` trong `tools.py` (`baca` → `bacabank`, `vcb` → `vietcombank`, `ctg`/`vietin` → `vietinbank`, `mb`/`quandoi` → `mbbank`, `tcb` → `techcombank`…).
+3. Ưu tiên khớp chính xác. Nếu không khớp chính xác và tên dài từ 3 ký tự trở lên thì khớp một phần (vd `oceanbank` khớp "MBV (OceanBank cũ)").
+
+Tên đường cũng được so khớp không dấu: `le duan` khớp "Lê Duẩn".
+
+**Xử lý lỗi:** `search_faq` và `web_search` tự bắt lỗi (Qdrant sập, Tavily timeout…) và trả lời cho model là đang lỗi hệ thống, dặn model không tự đưa ra hướng dẫn hay số liệu. Nhờ vậy cả lượt hội thoại không bị hỏng: `ToolNode` của LangGraph chỉ tự bắt lỗi sai tham số, lỗi khác sẽ làm hỏng lượt đó.
+
+## Dữ liệu
+
+| File | Số dòng | Dùng bởi |
+|---|---|---|
+| `data/raw/cskh_hoi_thoai_ngan_hang.csv` | 94 lượt nói / 34 hội thoại | `data_prep.py` (đầu vào) |
+| `data/processed/cskh_gop_theo_id.csv` | 34 hội thoại | `vector_db.py` (nạp vào Qdrant), eval |
+| `data/raw/lai_suat_ngan_hang_23-10-2026.csv` | 17 ngân hàng | `get_interest_rate` |
+| `data/raw/chi_nhanh_ngan_hang_quy_nhon.csv` | 23 chi nhánh / 18 ngân hàng | `get_branch_info` |
+
+Mọi file đều là CSV UTF-8 có BOM (`utf-8-sig`), mở bằng Excel không lỗi font.
+
+### Hội thoại CSKH
+
+`cskh_hoi_thoai_ngan_hang.csv`: mỗi dòng là một lượt nói.
+
+| Cột | Ý nghĩa | Ví dụ |
+|---|---|---|
+| `hoi_thoai_id` | Mã hội thoại | `HT001` |
+| `luot` | Thứ tự lượt nói trong hội thoại | `1`, `2`, `3` |
+| `vai_tro` | `khach_hang` hoặc `nhan_vien` | `khach_hang` |
+| `noi_dung` | Nội dung lượt nói | "ơi mình bị mất ví, trong đó có thẻ atm, giờ sao đây" |
+| `chu_de` | 11 chủ đề: Thẻ, Ngân hàng số, Tài khoản, Chuyển tiền, Tiết kiệm, Vay vốn, Bảo mật, Khiếu nại, Điểm giao dịch, Ngoài phạm vi, Khác | `Thẻ` |
+| `y_dinh` | Ý định của khách | `khoa_the_mat_the` |
+| `cam_xuc_khach` | Lo lắng, Bực bội, Hoảng sợ, Tức giận, Nghi ngờ, Thắc mắc, Bình thường, Hài lòng | `Lo lắng` |
+| `can_chuyen_nhan_vien` | `Có` / `Không` | `Không` |
+| `ghi_chu` | Ghi chú cho người viết dữ liệu | "Ưu tiên khóa thẻ ngay" |
+
+`data_prep.py` gộp mỗi hội thoại thành một dòng trong `cskh_gop_theo_id.csv`, gồm 4 cột: `hoi_thoai_id`; `question` (các lượt của khách nối lại); `answer` (các lượt của nhân viên nối lại); `chu_de`. Ba cột `y_dinh`, `cam_xuc_khach`, `can_chuyen_nhan_vien` hiện **chưa dùng**. Có thể dùng sau này, ví dụ để lọc theo chủ đề hoặc làm nhãn cho eval.
+
+**Embedding và Qdrant** (`vector_db.py`):
+- Chỉ **câu hỏi** (`question`) được embedding; `answer`, `chu_de` và `hoi_thoai_id` lưu trong metadata. Khi tìm kiếm, câu hỏi của khách được so với câu hỏi mẫu, rồi trả về câu trả lời đi kèm.
+- Văn bản được tách từ tiếng Việt bằng `pyvi` (vd "tài khoản" → "tài_khoản"), rồi embedding bằng `bkai-foundation-models/vietnamese-bi-encoder` (vector 768 chiều, chuẩn hóa), so khớp bằng cosine.
+- Collection tên `cskh_bkai`. ID của mỗi điểm là `uuid5(hoi_thoai_id)`, nên nạp lại thì ghi đè chứ không tạo bản trùng.
+
+### Lãi suất
+
+`lai_suat_ngan_hang_23-10-2026.csv`: mỗi dòng một ngân hàng, gồm cột `Mã NH`; 7 cột `Online {1,3,6,12,18,24,36}T (%/năm)`; 7 cột `Tại quầy {…}T (%/năm)`. Ô trống là ngân hàng không công bố kỳ hạn đó (2 ngân hàng không có kỳ hạn 18–36 tháng). Hai cột `Số CN đã thu thập ở Quy Nhơn` và `Online 12T cao nhất?` chỉ để tham khảo, tool không dùng.
+
+### Chi nhánh
+
+`chi_nhanh_ngan_hang_quy_nhon.csv`: `Mã NH`, `Tên ngân hàng`, `Đơn vị` (vd "CN Quy Nhơn"), `Loại`, `Địa chỉ (theo nguồn)`, `Phường mới (sau 1/7/2025)`, `Điện thoại`, `Giờ làm việc`, `Ghi chú / độ tin cậy`, `Nguồn` (một hoặc nhiều URL, cách nhau bằng `;`). `Mã NH` phải trùng với file lãi suất để cả hai tool nhận diện cùng một tên ngân hàng. Xem thêm [Lưu ý về dữ liệu chi nhánh](#lưu-ý-về-dữ-liệu-chi-nhánh).
+
+### Cập nhật dữ liệu
+
+| Dữ liệu | Cách cập nhật | Cần làm thêm |
+|---|---|---|
+| Lãi suất | Đặt file CSV mới vào `data/raw/` (giữ nguyên tên cột) | Sửa `RATE_FILE` và `RATE_DATE` trong `config.py`; build lại image nếu chạy Docker |
+| Chi nhánh | Sửa trực tiếp `chi_nhanh_ngan_hang_quy_nhon.csv` (giữ nguyên tên cột). Ô chưa có dữ liệu thì ghi "Chưa có nguồn" hoặc để trống | Build lại image nếu chạy Docker |
+| Hội thoại CSKH | Sửa `cskh_hoi_thoai_ngan_hang.csv` | Chạy `data_prep` rồi `vector_db` ([bước 2](#chạy-trên-máy-không-dùng-docker)). Docker: build lại image rồi chạy `docker compose down -v && docker compose up -d`, vì API chỉ tự nạp khi collection rỗng |
+
+Sau khi đổi dữ liệu hội thoại, chạy `uv run pytest tests/test_eval_dataset.py` để chắc các `faq_id` trong bộ eval vẫn tồn tại.
 
 ## Cấu trúc thư mục
 
@@ -56,11 +173,11 @@ bank_faqs/
 ├── src/bank_faqs/
 │   ├── __init__.py       # Khởi tạo chung: fix DLL torch (Windows), dùng kho chứng chỉ hệ thống, nạp .env
 │   ├── config.py         # Đường dẫn dữ liệu, cấu hình Qdrant/embedding, biến môi trường
-│   ├── llm.py            # Cấu hình LLM: open_llm (OpenRouter, đang dùng), google_llm (Gemini, judge của eval), groq_llm (Groq)
+│   ├── llm.py            # Cấu hình LLM: open_llm (OpenRouter, đang dùng), google_llm (Gemini: dự phòng + judge), groq_llm (Groq)
 │   ├── prompts.py        # System prompt của từng agent
 │   ├── tools.py          # 4 tool + gán tool cho từng agent
 │   ├── history.py        # Cắt bớt lịch sử hội thoại trước khi gửi model
-│   ├── agent.py          # Agent dựng bằng create_agent (LangChain), chạy thử 4 câu hỏi mẫu
+│   ├── agent.py          # Agent dựng bằng create_agent (LangChain) + Gemini dự phòng; chạy thử 4 câu hỏi mẫu
 │   ├── graph.py          # Cùng agent đó nhưng tự dựng bằng StateGraph (LangGraph)
 │   ├── data_prep.py      # Gộp các lượt hội thoại theo id -> data/processed/
 │   ├── vector_db.py      # Embedding bkai + Qdrant, nạp dữ liệu
@@ -82,14 +199,22 @@ bank_faqs/
 
 ## Yêu cầu
 
-- Python 3.12.15 và [uv](https://docs.astral.sh/uv/)
-- Docker (để chạy Qdrant và web app)
-- API key: [OpenRouter](https://openrouter.ai/keys) (agent), [Google AI Studio](https://aistudio.google.com/apikey) (Gemini, judge của eval), [Groq](https://console.groq.com), [Tavily](https://tavily.com); LangSmith (tùy chọn, để trace). `llm.py` khởi tạo cả 3 client LLM ngay khi import nên cần đủ cả 3 key, kể cả model không dùng
+- Python 3.12.15 (ghi trong `.python-version`) và [uv](https://docs.astral.sh/uv/)
+- Docker, để chạy Qdrant và web app
+- API key:
+
+| Key | Lấy ở đâu | Dùng cho | Bắt buộc |
+|---|---|---|---|
+| `OPENROUTER_API_KEY` | [openrouter.ai/keys](https://openrouter.ai/keys) | LLM chính của agent | Có |
+| `GOOGLE_API_KEY` | [Google AI Studio](https://aistudio.google.com/apikey) | Gemini: dự phòng của agent, judge của eval | Có |
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Groq (dự phòng, hiện không dùng) | Có, vì `llm.py` tạo client ngay khi import |
+| `TAVILY_API_KEY` | [tavily.com](https://tavily.com) | Tool `web_search` | Có |
+| `LANGSMITH_API_KEY` | [smith.langchain.com](https://smith.langchain.com) | Trace để debug | Không |
 
 ## Cài đặt
 
 ```bash
-uv sync            # cài thư viện + nhóm dev (pytest, langgraph-cli)
+uv sync            # tạo .venv, cài thư viện + nhóm dev (pytest, langgraph-cli)
 ```
 
 Nếu dùng pip thay cho uv: `pip install -r requirements.txt`. File này đã có sẵn index của torch bản CPU. Thư viện dev cài riêng theo hướng dẫn ở cuối file. Khi thêm hoặc bớt thư viện, sửa `pyproject.toml` (`uv add …`) rồi sửa `requirements.txt` cho khớp; `tests/test_requirements.py` sẽ báo nếu hai file lệch nhau.
@@ -109,7 +234,19 @@ LANGSMITH_TRACING=true
 LANGSMITH_PROJECT=bank-faqs
 ```
 
-## Deploy bằng Docker (web app)
+Các biến môi trường khác:
+
+| Biến | Mặc định | Ý nghĩa |
+|---|---|---|
+| `QDRANT_URL` | `http://localhost:6333` | Địa chỉ Qdrant. Trong Docker, `docker-compose.yml` ghi đè thành `http://qdrant:6333` |
+| `AUTO_INGEST` | `true` | Web app tự nạp dữ liệu khi collection rỗng |
+| `LANGSMITH_TRACING` | (không bật) | `true` để gửi trace lên LangSmith. Test và eval luôn tắt trace |
+
+`.env` được nạp một lần trong `src/bank_faqs/__init__.py`. Biến đã có sẵn trong môi trường thì **không** bị `.env` ghi đè.
+
+Trên Windows, sau khi `uv sync` lần đầu, làm thêm bước trong [Lưu ý trên Windows](#lưu-ý-trên-windows).
+
+## Deploy bằng Docker
 
 Cách nhanh nhất để chạy cả hệ thống, chỉ cần Docker và file `.env`:
 
@@ -121,14 +258,20 @@ Lệnh này chạy 2 container:
 
 | Container | Cổng | Vai trò |
 |---|---|---|
-| `qdrant` | 6333, 6334 | Vector DB (v1.20.0), dữ liệu lưu ở Docker volume `qdrant_data` |
+| `qdrant` | 6333 (REST + dashboard), 6334 (gRPC) | Vector DB (v1.20.0), dữ liệu lưu ở Docker volume `qdrant_data` |
 | `bank_faqs_api` | 8000 | Web app FastAPI (uvicorn) |
 
-- Khi khởi động, API chờ Qdrant sẵn sàng (thử lại tối đa ~60 giây).
+Khi khởi động:
+- API chờ Qdrant sẵn sàng (thử lại 30 lần, mỗi lần cách 2 giây, tức tối đa khoảng 60 giây).
 - Nếu collection còn rỗng, API **tự nạp dữ liệu** từ `data/processed/cskh_gop_theo_id.csv`. Đặt `AUTO_INGEST: "false"` trong `docker-compose.yml` để tắt.
-- Model embedding được tải sẵn vào image lúc build, nên container không cần mạng tới Hugging Face.
+- Docker kiểm tra `/health` mỗi 30 giây, bắt đầu sau 120 giây kể từ khi container khởi động. `docker ps` hiện `(healthy)` khi API đã sẵn sàng.
+
+Về image:
+- Base `python:3.12.15-slim-bookworm`. Thư viện cài bằng uv theo `uv.lock` (`--locked`, không cài thư viện dev); torch là bản CPU.
+- Model embedding (~540MB) được tải sẵn vào image lúc build, và `HF_HUB_OFFLINE=1`, nên container không cần mạng tới Hugging Face.
+- Chạy bằng user thường (`app`, uid 1000), không chạy bằng root.
+- Image chỉ chứa thứ cần để chạy (`src/`, `data/`, thư viện, model embedding): không có `tests/`, `evals/`, `.env` (key được truyền qua `env_file` lúc chạy), hay thư viện dev. Image nặng khoảng 3.4GB, phần lớn là torch và model.
 - Lần build đầu mất vài phút. Các lần sau, nếu chỉ sửa `src/` hoặc `data/`, Docker dùng lại cache của bước cài thư viện và tải model.
-- Image chỉ chứa thứ cần để chạy (`src/`, `data/`, thư viện, model embedding): không có `tests/`, `evals/`, `.env` (key được truyền qua `env_file` lúc chạy), hay thư viện dev.
 - Sau khi sửa code, dữ liệu hoặc thư viện: chạy lại `docker compose up -d --build api` để build lại image.
 
 Sau khi chạy:
@@ -136,44 +279,21 @@ Sau khi chạy:
 - **Trang chat:** http://localhost:8000
 - **Tài liệu API (Swagger):** http://localhost:8000/docs
 - **Kiểm tra trạng thái:** http://localhost:8000/health trả về `{"status": "ok", "documents": 34}`
+- **Dashboard Qdrant:** http://localhost:6333/dashboard
 
 ```bash
+docker compose ps              # trạng thái container
 docker compose logs -f api     # xem log
+docker compose restart api     # khởi động lại API (mất lịch sử hội thoại)
 docker compose down            # dừng (dữ liệu Qdrant vẫn giữ trong volume)
 docker compose down -v         # dừng và xóa luôn dữ liệu Qdrant (lần chạy sau API tự nạp lại)
 ```
 
-### API
-
-`POST /chat`
-
-```json
-// request: bỏ trống thread_id để bắt đầu hội thoại mới
-{"message": "lãi suất 12 tháng BIDV", "thread_id": null}
-
-// response
-{"thread_id": "5f0c…", "answer": "Lãi suất tiết kiệm BIDV kỳ hạn 12 tháng…", "tools": ["get_interest_rate"]}
-```
-
-Gửi lại `thread_id` ở các lượt sau để agent nhớ ngữ cảnh. Ví dụ: hỏi "lãi suất BIDV" rồi hỏi tiếp "còn Vietcombank thì sao". `tools` chỉ liệt kê các tool được gọi trong lượt đó.
-
-| Mã lỗi | Khi nào |
-|---|---|
-| 422 | `message` rỗng hoặc dài quá 1000 ký tự |
-| 429 | Cả OpenRouter lẫn Gemini dự phòng đều báo vượt giới hạn (theo phút hoặc theo ngày); xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free) |
-| 502 | Cả OpenRouter lẫn Gemini dự phòng đều lỗi (lỗi khác, mất kết nối…) |
-| 503 | `/health`: không kết nối được Qdrant |
-
-```bash
-curl http://localhost:8000/chat -H 'Content-Type: application/json' \
-  -d '{"message": "chi nhánh BIDV ở Quy Nhơn"}'
-```
-
-**Giới hạn:** lịch sử hội thoại lưu trong RAM của container (`InMemorySaver`), nên mất khi restart. Vì vậy uvicorn chỉ chạy 1 worker. Muốn chạy nhiều worker hoặc nhiều container thì phải đổi sang checkpointer dùng chung, ví dụ Postgres (`langgraph-checkpoint-postgres`).
-
 ### Mạng có SSL inspection
 
-Nếu log báo `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain` (ví dụ khi gọi Gemini hoặc gửi trace lên LangSmith), nghĩa là proxy của mạng đang cấp lại chứng chỉ HTTPS bằng một CA nội bộ. Khi chạy trên máy, `bank_faqs/__init__.py` đã cho Python dùng kho chứng chỉ Windows (qua `truststore`), vốn đã tin CA này. Container thì không có CA đó. Cách xử lý: xuất CA từ kho chứng chỉ Windows vào thư mục `certs/` rồi build lại image. Dockerfile sẽ cài mọi file `certs/*.crt` vào container. Các file `.crt` này không được commit.
+Nếu log báo `CERTIFICATE_VERIFY_FAILED: self-signed certificate in certificate chain` (ví dụ khi gọi LLM hoặc gửi trace lên LangSmith), nghĩa là proxy của mạng đang cấp lại chứng chỉ HTTPS bằng một CA nội bộ.
+- Khi chạy trên máy, `bank_faqs/__init__.py` đã cho Python dùng kho chứng chỉ Windows (qua `truststore`), vốn đã tin CA này.
+- Container thì không có CA đó. Cách xử lý: xuất CA từ kho chứng chỉ Windows vào thư mục `certs/` rồi build lại image. Dockerfile sẽ cài mọi file `certs/*.crt` vào container. Các file `.crt` này không được commit.
 
 ```powershell
 # PowerShell: đổi 'CN=ten-CA*' thành tên CA nội bộ (xem issuer của chứng chỉ bị lỗi)
@@ -182,9 +302,9 @@ $c = Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like 'CN
 docker compose up -d --build api
 ```
 
-## Chạy trên máy (không Docker)
+## Chạy trên máy không dùng Docker
 
-**1. Khởi động Qdrant**
+**1. Khởi động Qdrant** (vẫn chạy bằng Docker, chỉ riêng Qdrant)
 
 ```bash
 docker compose up -d qdrant
@@ -198,28 +318,38 @@ Dashboard tại http://localhost:6333/dashboard.
 # Gộp các lượt hội thoại theo id -> data/processed/cskh_gop_theo_id.csv
 uv run python -m bank_faqs.data_prep
 
-# Embedding và nạp vào collection 'cskh_bkai'
+# Embedding và nạp vào collection 'cskh_bkai', rồi thử tìm "quên mật khẩu app ngân hàng"
 uv run python -m bank_faqs.vector_db
 ```
 
-Lần chạy đầu sẽ tải model `bkai-foundation-models/vietnamese-bi-encoder` từ Hugging Face. ID mỗi điểm được sinh cố định từ `hoi_thoai_id`, nên chạy lại sẽ ghi đè chứ không tạo bản trùng.
+Lần chạy đầu sẽ tải model `bkai-foundation-models/vietnamese-bi-encoder` (~540MB) từ Hugging Face. ID mỗi điểm được sinh cố định từ `hoi_thoai_id`, nên chạy lại sẽ ghi đè chứ không tạo bản trùng.
 
 **3. Chạy agent**
 
 ```bash
-uv run python -m bank_faqs.agent
+uv run python -m bank_faqs.agent   # create_agent: 4 câu hỏi mẫu (quên mật khẩu, lãi suất, lộ OTP, ngoài phạm vi)
+uv run python -m bank_faqs.graph   # StateGraph: 1 câu hỏi mẫu, in từng message
 ```
 
-Script chạy 4 câu hỏi mẫu (quên mật khẩu, lãi suất, lộ OTP, câu hỏi ngoài phạm vi) và in ra tool đã gọi cùng câu trả lời.
+`agent` in ra tool đã gọi và câu trả lời của từng câu; `graph` in toàn bộ các message (gọi tool, kết quả tool, câu trả lời).
 
 Dùng agent trong code:
 
 ```python
-from bank_faqs.agent import agent
+from bank_faqs.agent import build_agent
+from langgraph.checkpoint.memory import InMemorySaver
 
-res = agent.invoke({'messages': [{'role': 'user', 'content': 'thẻ bị nuốt ở cây ATM thì làm sao'}]})
+agent = build_agent(checkpointer=InMemorySaver())   # có checkpointer thì nhớ hội thoại theo thread_id
+config = {'configurable': {'thread_id': 'khach-1'}}
+
+res = agent.invoke({'messages': [{'role': 'user', 'content': 'lãi suất 12 tháng BIDV'}]}, config)
+print(res['messages'][-1].text)
+
+res = agent.invoke({'messages': [{'role': 'user', 'content': 'còn Vietcombank thì sao'}]}, config)
 print(res['messages'][-1].text)
 ```
+
+`build_agent(fallback=False)` tắt Gemini dự phòng (eval dùng cách này). Không cần nhớ hội thoại thì dùng luôn `from bank_faqs.agent import agent`.
 
 **4. LangGraph Studio / API server**
 
@@ -227,7 +357,7 @@ print(res['messages'][-1].text)
 uv run langgraph dev
 ```
 
-Server chạy tại http://127.0.0.1:2024 với 2 graph khai báo trong `langgraph.json`: `agent_main` (`agent.py`) và `bank_graph` (`graph.py`). Hai graph dùng chung LLM, tool và system prompt, chỉ khác cách dựng. Có thể chat và xem từng bước gọi tool trên LangGraph Studio (link in ra khi khởi động), hoặc gọi qua API:
+Server chạy tại http://127.0.0.1:2024 với 2 graph khai báo trong `langgraph.json`: `agent_main` (`agent.py`) và `bank_graph` (`graph.py`). Server tự nạp `.env` và tự quản lý bộ nhớ hội thoại. Có thể chat và xem từng bước gọi tool trên LangGraph Studio (link in ra khi khởi động), hoặc gọi qua API:
 
 ```bash
 curl http://127.0.0.1:2024/runs/wait -H 'Content-Type: application/json' \
@@ -242,28 +372,82 @@ curl http://127.0.0.1:2024/runs/wait -H 'Content-Type: application/json' \
 uv run uvicorn bank_faqs.api:app --port 8000
 ```
 
+Thêm `--reload` để tự khởi động lại khi sửa code (lịch sử hội thoại sẽ mất mỗi lần reload).
+
+## Web app và API
+
+### Trang chat
+
+`src/bank_faqs/static/index.html` là một trang HTML duy nhất, không cần build:
+- Enter để gửi, Shift+Enter để xuống dòng; nút **Cuộc trò chuyện mới** xóa màn hình và bắt đầu hội thoại mới (bỏ `thread_id` cũ).
+- Câu trả lời dạng markdown: hiển thị **in đậm**, bỏ dấu `#` của tiêu đề, và biến URL hoặc `[chữ](url)` thành link mở tab mới. Trang chỉ tạo text và thẻ `<a>` với link `http(s)`, nên không bị chèn HTML hay `javascript:`.
+- Dưới mỗi câu trả lời có dòng "Đã tra cứu: …" liệt kê các tool đã gọi.
+- Lỗi từ API (429, 502…) được hiện thành tin nhắn lỗi màu riêng.
+
+### Endpoint
+
+| Method | Đường dẫn | Mô tả |
+|---|---|---|
+| `GET` | `/` | Trang chat |
+| `POST` | `/chat` | Gửi tin nhắn, nhận câu trả lời |
+| `GET` | `/health` | Trạng thái: `{"status": "ok", "documents": 34}`, hoặc 503 nếu không kết nối được Qdrant |
+| `GET` | `/docs` | Swagger UI (FastAPI tự sinh) |
+
+### POST /chat
+
+```json
+// request: bỏ trống thread_id để bắt đầu hội thoại mới
+{"message": "lãi suất 12 tháng BIDV", "thread_id": null}
+
+// response
+{"thread_id": "5f0c…", "answer": "Dạ, lãi suất tiết kiệm kỳ hạn 12 tháng tại BIDV…", "tools": ["get_interest_rate"]}
+```
+
+| Trường | Kiểu | Ràng buộc / ý nghĩa |
+|---|---|---|
+| `message` (request) | string | Bắt buộc, 1–1000 ký tự |
+| `thread_id` (request) | string hoặc null | Tối đa 100 ký tự. `null` thì tạo hội thoại mới |
+| `thread_id` (response) | string | Gửi lại ở các lượt sau để agent nhớ ngữ cảnh |
+| `answer` (response) | string | Câu trả lời (markdown) |
+| `tools` (response) | string[] | Các tool được gọi **trong lượt này**, theo thứ tự |
+
+Ví dụ hỏi tiếp: hỏi "lãi suất BIDV", rồi gửi "còn Vietcombank thì sao" kèm `thread_id` vừa nhận, agent sẽ hiểu là đang hỏi lãi suất.
+
+| Mã lỗi | Khi nào |
+|---|---|
+| 422 | `message` rỗng, dài quá 1000 ký tự, hoặc `thread_id` dài quá 100 ký tự |
+| 429 | Cả OpenRouter lẫn Gemini dự phòng đều báo vượt giới hạn (theo phút hoặc theo ngày); xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free) |
+| 502 | Cả OpenRouter lẫn Gemini dự phòng đều lỗi (lỗi khác, mất kết nối…) |
+| 503 | `/health`: không kết nối được Qdrant |
+
+```bash
+curl http://localhost:8000/chat -H 'Content-Type: application/json' \
+  -d '{"message": "chi nhánh BIDV ở Quy Nhơn"}'
+```
+
+Trên Windows, curl của Git Bash có thể gửi sai mã hóa tiếng Việt (API trả 400). Khi đó dùng PowerShell `Invoke-RestMethod`, Swagger UI, hoặc gửi bằng Python.
+
+**Giới hạn:** lịch sử hội thoại lưu trong RAM của container (`InMemorySaver`), nên mất khi restart. Vì vậy uvicorn chỉ chạy 1 worker. Muốn chạy nhiều worker hoặc nhiều container thì phải đổi sang checkpointer dùng chung, ví dụ Postgres (`langgraph-checkpoint-postgres`). API chưa có xác thực hay giới hạn request theo người dùng; nếu mở ra internet thì nên đặt sau reverse proxy có các chức năng này.
+
 ## Test
 
 ```bash
-uv run pytest
+uv run pytest                          # chạy tất cả
+uv run pytest tests/test_tools.py -v   # một file, in tên từng test
+uv run pytest -k branch                # chỉ các test có chữ "branch" trong tên
 ```
 
-Gồm 65 test, chạy dưới 1 phút và không gọi LLM hay Tavily thật (trace LangSmith được tắt trong `conftest.py`):
+Gồm 65 test, chạy dưới 1 phút và **không gọi LLM, Tavily hay mạng** (trace LangSmith được tắt trong `conftest.py`; `conftest.py` cũng đặt key giả nên test chạy được khi không có `.env`). Một số test cần Qdrant hoặc model embedding thì dùng bản giả.
 
-- `tests/test_tools.py`:
-  - nhận diện tên ngân hàng và dữ liệu lãi suất;
-  - tool chi nhánh: lọc theo ngân hàng/đường, có nguồn và độ tin cậy, tách nhiều URL nguồn, ẩn ô "Chưa có nguồn" và ô bỏ trống;
-  - tool tự bắt lỗi khi Qdrant hoặc Tavily lỗi.
-- `tests/test_history.py`: cắt lịch sử đúng ranh giới lượt hỏi, rút gọn kết quả tool cũ, không làm thay đổi state.
-- `tests/test_api.py`:
-  - các endpoint (dùng agent giả) và validate input;
-  - mã lỗi 429/502/503, của OpenRouter, Gemini và Groq;
-  - bộ nhớ theo `thread_id`;
-  - tự nạp dữ liệu, thử lại khi Qdrant chưa sẵn sàng, và dùng chung một Qdrant client.
-- `tests/test_agent.py`: model chính lỗi thì agent trả lời bằng model dự phòng; tắt dự phòng (`fallback=False`) thì lỗi được báo ra.
-- `tests/test_llm.py`: `timeout` của từng LLM đúng đơn vị (OpenRouter tính bằng mili giây, xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free)).
-- `tests/test_requirements.py`: `requirements.txt` có đúng các thư viện trong `pyproject.toml`.
-- `tests/test_eval_dataset.py`: `evals/dataset.jsonl` hợp lệ (đúng tên trường, id không trùng, tool và `faq_id` có tồn tại, câu hỏi không chép nguyên văn từ dữ liệu). Nhờ vậy khi đổi tên tool hay sửa dữ liệu mà quên cập nhật eval thì test sẽ báo.
+| File | Kiểm tra |
+|---|---|
+| `tests/test_tools.py` | Nhận diện tên ngân hàng và dữ liệu lãi suất. Tool chi nhánh: lọc theo ngân hàng/đường, có nguồn và độ tin cậy, tách nhiều URL nguồn, ẩn ô "Chưa có nguồn" và ô bỏ trống. Tool tự bắt lỗi khi Qdrant hoặc Tavily lỗi |
+| `tests/test_history.py` | Cắt lịch sử đúng ranh giới lượt hỏi, rút gọn kết quả tool cũ, không làm thay đổi state |
+| `tests/test_api.py` | Các endpoint (dùng agent giả) và validate input; mã lỗi 429/502/503 của OpenRouter, Gemini và Groq; bộ nhớ theo `thread_id`; tự nạp dữ liệu, thử lại khi Qdrant chưa sẵn sàng, dùng chung một Qdrant client |
+| `tests/test_agent.py` | Model chính lỗi thì agent trả lời bằng model dự phòng; tắt dự phòng (`fallback=False`) thì lỗi được báo ra |
+| `tests/test_llm.py` | `timeout` của từng LLM đúng đơn vị (OpenRouter tính bằng mili giây, xem [Giới hạn của LLM](#giới-hạn-của-llm-gói-free)) |
+| `tests/test_requirements.py` | `requirements.txt` có đúng các thư viện trong `pyproject.toml` |
+| `tests/test_eval_dataset.py` | `evals/dataset.jsonl` hợp lệ: đúng tên trường, id không trùng, tool và `faq_id` có tồn tại, câu hỏi không chép nguyên văn từ dữ liệu. Đổi tên tool hay sửa dữ liệu mà quên cập nhật eval thì test sẽ báo |
 
 ## Đánh giá (eval)
 
@@ -443,21 +627,66 @@ Nhận xét:
 | `google_llm` (Gemini) | `gemini-3.1-flash-lite` | Dự phòng của `agent.py` khi OpenRouter lỗi; judge của eval |
 | `groq_llm` (Groq) | `qwen/qwen3.8-27b` | Dự phòng, hiện không dùng |
 
-Đổi model của agent bằng cách sửa `llm.py`, hoặc truyền `model=` khác trong `build_agent` (`agent.py`) và `bind_tools` (`graph.py`). Cả 3 client được tạo ngay khi import `llm.py`, nên `.env` phải có đủ cả 3 key.
+Cả 3 đều đặt `temperature=0` và `max_retries=3`. Cả 3 client được tạo ngay khi import `llm.py`, nên `.env` phải có đủ cả 3 key.
 
-**Dự phòng:** `build_agent()` gắn `ModelFallbackMiddleware(google_llm)`: lượt nào OpenRouter lỗi (hết quota ngày, quá tải, mất kết nối…) thì lượt đó Gemini trả lời thay, nên web app vẫn chạy được khi OpenRouter hết quota. OpenRouter hết quota thì báo lỗi sau khoảng 1 giây nên khách gần như không phải chờ thêm. Việc chuyển sang Gemini không ghi log; muốn biết model chính có đang lỗi không thì kiểm tra quota (lệnh bên dưới). Chỉ `agent.py` có dự phòng, `graph.py` thì không. Eval gọi `build_agent(fallback=False)` để điểm số phản ánh đúng model chính.
+**Dự phòng:** `build_agent()` gắn `ModelFallbackMiddleware(google_llm)`: lần gọi nào OpenRouter lỗi (hết quota ngày, quá tải, mất kết nối…) thì Gemini trả lời thay, nên web app vẫn chạy được khi OpenRouter hết quota. OpenRouter hết quota thì báo lỗi sau khoảng 1 giây, nên khách gần như không phải chờ thêm.
+- Việc chuyển sang Gemini **không ghi log**; muốn biết model chính có đang lỗi không thì kiểm tra quota (lệnh bên dưới).
+- Chỉ `agent.py` có dự phòng, `graph.py` thì không.
+- Eval gọi `build_agent(fallback=False)` để điểm số phản ánh đúng model chính.
 
-**OpenRouter:** model có hậu tố `:free` bị giới hạn khoảng **20 request/phút** và **50 request/ngày** nếu tài khoản chưa từng nạp đủ 10 USD credit (nạp rồi thì 1000 request/ngày). Mỗi câu hỏi tốn 2–3 request, nên gói free chỉ đủ khoảng 20 câu mỗi ngày, **tính chung cho web app và eval**. Hết quota ngày thì agent chuyển sang Gemini cho tới khi quota reset (00:00 UTC, tức 7:00 sáng giờ Việt Nam). Kiểm tra quota của key: `curl https://openrouter.ai/api/v1/key -H "Authorization: Bearer $OPENROUTER_API_KEY"`.
+**OpenRouter:** model có hậu tố `:free` bị giới hạn khoảng **20 request/phút** và **50 request/ngày** nếu tài khoản chưa từng nạp đủ 10 USD credit (nạp rồi thì 1000 request/ngày).
+- Mỗi câu hỏi tốn 2–3 request, nên gói free chỉ đủ khoảng 20 câu mỗi ngày, **tính chung cho web app và eval**.
+- Hết quota ngày thì agent chuyển sang Gemini cho tới khi quota reset (00:00 UTC, tức 7:00 sáng giờ Việt Nam).
+- Kiểm tra quota của key: `curl https://openrouter.ai/api/v1/key -H "Authorization: Bearer $OPENROUTER_API_KEY"`. Hoặc gửi một request rồi xem header `x-ratelimit-remaining`.
+- Model này là model suy luận (có phần reasoning trước khi trả lời), nên chậm hơn Gemini: trung vị khoảng 10 giây mỗi câu, câu có kết quả tool dài khoảng 30 giây. `max_tokens=1024` tính cả token reasoning; với các câu trong eval thì chưa câu nào bị cắt cụt.
 
 > **Chú ý:** `ChatOpenRouter` tính `timeout` bằng **mili giây** (`timeout=60_000` là 60 giây), khác `ChatGroq`/`ChatGoogleGenerativeAI` tính bằng giây. Nếu đặt `timeout=60` thì mọi request bị hủy sau 60ms, SDK thử lại liên tục và agent treo vài phút mà không báo lỗi. `tests/test_llm.py` kiểm tra lỗi này.
 
-**Gemini** (judge): giới hạn theo số request mỗi phút cho từng model (vd `gemini-3.1-flash-lite` ở gói free: 15 request/phút). Eval tự chờ và thử lại khi bị 429.
+**Gemini** (dự phòng + judge): giới hạn theo số request mỗi phút cho từng model (`gemini-3.1-flash-lite` ở gói free: 15 request/phút). Eval tự chờ và thử lại khi bị 429.
 
 **Groq** (dự phòng): gói free giới hạn 1000 token đầu ra/phút, 7000 token đầu vào/phút và 200.000 token/ngày (khoảng 50 câu hỏi). `llm.py` đặt `max_tokens=512`, vì nếu không đặt thì Groq tính mỗi request 2048 token đầu ra và luôn vượt giới hạn.
 
-**Cắt bớt lịch sử (mọi model):** gửi lại toàn bộ lịch sử thì số token đầu vào tăng mãi, chat vài lượt là vượt giới hạn (Groq trả 413) và chậm dần. `history.py` chỉ gửi model 4 lượt hỏi gần nhất, và rút kết quả tool của các lượt trước còn 300 ký tự; mỗi lần gọi còn khoảng 1100–2800 token. Lịch sử đầy đủ vẫn giữ trong bộ nhớ, chỉ phần gửi đi model bị cắt.
+**Cắt bớt lịch sử (mọi model):** gửi lại toàn bộ lịch sử thì số token đầu vào tăng mãi, chat vài lượt là vượt giới hạn (Groq trả 413) và chậm dần. `history.py` chỉ gửi model 4 lượt hỏi gần nhất (`KEEP_TURNS`), và rút kết quả tool của các lượt trước còn 300 ký tự (`OLD_TOOL_CHARS`); mỗi lần gọi còn khoảng 1100–2800 token. Lịch sử bị cắt tại ranh giới tin nhắn của khách, nên lời gọi tool không bị tách khỏi kết quả của nó. Lịch sử đầy đủ vẫn giữ trong bộ nhớ, chỉ phần gửi đi model bị cắt.
 
-Khi chạm giới hạn, SDK tự chờ rồi thử lại vài lần. Nếu vẫn không được, API trả về **429** và ghi loại giới hạn vào log (`docker compose logs api | grep "rate limit"`).
+Khi chạm giới hạn, SDK tự chờ rồi thử lại vài lần. Nếu cả model chính lẫn dự phòng đều không được, API trả về **429** và ghi loại giới hạn vào log (`docker compose logs api | grep "rate limit"`).
+
+## Mở rộng dự án
+
+**Đổi model của agent**
+1. Sửa model trong `llm.py`, hoặc thêm client mới (vd `ChatOpenAI`, nhớ thêm thư viện vào cả `pyproject.toml` lẫn `requirements.txt`).
+2. Đổi `model=` trong `build_agent` (`agent.py`) và `open_llm.bind_tools(...)` (`graph.py`).
+3. Kiểm tra đơn vị `timeout` của client mới, rồi cập nhật `tests/test_llm.py`.
+4. Nếu SDK mới ném loại lỗi riêng (không kế thừa `ModelError` của langchain-core), thêm loại lỗi đó vào `is_rate_limited` và khối `except` trong `api.py`, nếu không API sẽ trả 500 thay vì 429/502. Thêm test vào `tests/test_api.py`.
+5. Chạy `uv run pytest`, rồi chạy eval để so sánh với kết quả cũ.
+
+**Thêm tool mới**
+1. Viết hàm `@tool` trong `tools.py`. Docstring chính là mô tả mà model đọc để quyết định khi nào gọi tool, nên viết rõ: dùng khi nào, **không** dùng khi nào, tham số nghĩa là gì. Tự bắt lỗi bên trong tool (như `search_faq`) để lỗi không làm hỏng lượt hội thoại.
+2. Thêm vào `TOOLS` và `AGENT_TOOLS` ở cuối `tools.py`.
+3. Bổ sung quy tắc dùng tool trong `prompts.py`.
+4. Thêm test vào `tests/test_tools.py` (cập nhật `test_agent_main_has_all_tools`), và thêm câu hỏi vào `evals/dataset.jsonl` với `tools` là tool mới.
+
+**Sửa system prompt:** sửa `AGENT_PROMPTS` trong `prompts.py`, rồi chạy eval các nhóm bị ảnh hưởng (vd sửa quy tắc độ dài thì chạy `--only escalation,security,branch` và so sánh số từ). Muốn có agent khác (prompt và bộ tool khác) thì thêm key mới vào cả `AGENT_PROMPTS` và `AGENT_TOOLS`.
+
+**Thêm dữ liệu:** xem [Cập nhật dữ liệu](#cập-nhật-dữ-liệu).
+
+## Xử lý sự cố
+
+| Triệu chứng | Nguyên nhân thường gặp | Cách xử lý |
+|---|---|---|
+| `/chat` trả **429** "Hệ thống đang quá tải" | OpenRouter hết quota ngày **và** Gemini cũng vượt giới hạn | Chờ quota reset, hoặc nạp credit OpenRouter. Xem log: `docker compose logs api \| grep "rate limit"` |
+| Câu trả lời chất lượng khác thường, nhanh hơn thường lệ | OpenRouter hết quota, Gemini đang trả lời thay | Kiểm tra quota OpenRouter ([Giới hạn của LLM](#giới-hạn-của-llm-gói-free)) |
+| `/chat` trả **502** | Cả hai LLM lỗi (sai key, mất mạng…) | Xem `docker compose logs api`, kiểm tra key trong `.env`, rồi `docker compose up -d api` để nạp lại `.env` |
+| Agent **treo** vài phút rồi mới trả lời hoặc lỗi | `timeout` của OpenRouter đặt bằng giây thay vì mili giây | Đặt `timeout=60_000` trong `llm.py`; `uv run pytest tests/test_llm.py` |
+| `/health` trả **503**, hoặc API không lên | Qdrant chưa chạy hoặc sai `QDRANT_URL` | `docker compose up -d qdrant`; trên máy dùng `http://localhost:6333`, trong Docker là `http://qdrant:6333` |
+| `search_faq` không tìm thấy gì, eval báo collection rỗng | Chưa nạp dữ liệu vào Qdrant | `uv run python -m bank_faqs.vector_db` |
+| `AuthenticationError` / 401 | Key sai hoặc hết hạn | Tạo key mới, sửa `.env`. Docker: `docker compose up -d api` để nạp lại |
+| Log có `Failed to multipart ingest runs ... 403` | Key LangSmith sai hoặc không có quyền ghi | Đổi `LANGSMITH_API_KEY`, hoặc đặt `LANGSMITH_TRACING=false`. Không ảnh hưởng tới chức năng |
+| `CERTIFICATE_VERIFY_FAILED` | Mạng có SSL inspection | Xem [Mạng có SSL inspection](#mạng-có-ssl-inspection) |
+| `OSError: [WinError 1114] ... c10.dll` | Xung đột `msvcp140.dll` trên Windows | Xem [Lưu ý trên Windows](#lưu-ý-trên-windows) |
+| `UnicodeEncodeError` khi in tiếng Việt | Console Windows dùng mã hóa cp1252 | Đặt `PYTHONUTF8=1` |
+| curl gửi tiếng Việt bị 400 | curl của Git Bash gửi sai mã hóa | Dùng PowerShell, Swagger UI (`/docs`) hoặc Python |
+| `langgraph dev` reload liên tục ("WatchFiles detected changes in .venv") | Có tiến trình khác đang ghi vào `.venv` cùng lúc (vd cài thư viện, chạy server khác) | Chờ tiến trình kia xong rồi chạy lại |
+| Sửa code/dữ liệu nhưng Docker không thay đổi | Image cũ | `docker compose up -d --build api` |
 
 ## Lưu ý về dữ liệu chi nhánh
 
@@ -478,4 +707,5 @@ Khi chạm giới hạn, SDK tự chờ rồi thử lại vài lần. Nếu vẫ
 
   - Kiểm tra: `uv run python -c "import pandas, torch"` không báo lỗi.
   - Dự phòng khi chưa có file `.pth`: `src/bank_faqs/__init__.py` cũng nạp trước `msvcp140.dll`. Các file chạy được (`vector_db.py`, `agent.py`, `graph.py`) có `import bank_faqs` ở **dòng đầu tiên**, nên `python -m ...` vẫn chạy được. Cách này không đủ cho `langgraph dev`, vì server import `pandas` trước khi nạp code của dự án.
-- **Lỗi `UnicodeEncodeError` khi in tiếng Việt** (lúc chuyển hướng output sang pipe hoặc file): đặt biến môi trường `PYTHONUTF8=1`.
+- **Lỗi `UnicodeEncodeError` khi in tiếng Việt** (lúc chuyển hướng output sang pipe hoặc file): đặt biến môi trường `PYTHONUTF8=1`. `evals/run_eval.py` đã tự chuyển stdout/stderr sang UTF-8.
+- **Ký tự xuống dòng:** git có thể báo "LF will be replaced by CRLF". Đây chỉ là cảnh báo của `core.autocrlf`, không ảnh hưởng tới code.
