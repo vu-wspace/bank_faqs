@@ -1,4 +1,4 @@
-# bank-faqs
+# Bank FAQs: Agent chăm sóc khách hàng ngân hàng tiếng Việt
 
 Agent chăm sóc khách hàng (CSKH) ngân hàng bằng tiếng Việt, xây dựng với LangChain/LangGraph. Agent trả lời câu hỏi về thẻ, tài khoản, chuyển tiền, tiết kiệm, vay, lừa đảo, ứng dụng ngân hàng, lãi suất tiết kiệm và địa chỉ chi nhánh tại Quy Nhơn.
 
