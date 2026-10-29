@@ -35,19 +35,23 @@ docker compose up -d --build   # build image, chạy Qdrant + web app, tự nạ
 
 ## Cách hoạt động
 
-```
-Trình duyệt (trang chat)                    LangGraph Studio (langgraph dev)
-        │ POST /chat                                   │
-        ▼                                              ▼
-FastAPI (api.py) ── nhớ hội thoại theo thread_id ──> Agent (agent.py: create_agent, hoặc graph.py: StateGraph)
-                                                       │
-                     LLM: OpenRouter nemotron-3-ultra-550b-a55b:free ── lỗi/hết quota ──> Gemini gemini-3.1-flash-lite
-                                                       │ gọi tool
-        ┌───────────────────────┬──────────────────────┼─────────────────────────┐
-        ▼                       ▼                      ▼                         ▼
-   search_faq           get_interest_rate        get_branch_info             web_search
- Qdrant (34 hội thoại,   CSV lãi suất           CSV chi nhánh               Tavily
- embedding bkai)         17 ngân hàng           23 chi nhánh, có nguồn      (3 kết quả)
+```mermaid
+flowchart TD
+    browser["Trình duyệt<br/>(trang chat)"] -->|"POST /chat"| api["FastAPI · api.py<br/>nhớ hội thoại theo thread_id"]
+    studio["LangGraph Studio<br/>(langgraph dev)"] --> agent
+    api --> agent["Agent<br/>agent.py: create_agent<br/>graph.py: StateGraph"]
+
+    agent <--> llm["LLM chính<br/>OpenRouter nemotron-3-ultra-550b-a55b:free"]
+    llm -.->|"lỗi / hết quota<br/>(chỉ agent.py)"| gemini["LLM dự phòng<br/>Gemini gemini-3.1-flash-lite"]
+
+    subgraph tools ["Tools (tools.py)"]
+        faq["search_faq"] --> qdrant[("Qdrant<br/>34 hội thoại, embedding bkai")]
+        rate["get_interest_rate"] --> rcsv[("CSV lãi suất<br/>17 ngân hàng")]
+        branch["get_branch_info"] --> bcsv[("CSV chi nhánh<br/>23 chi nhánh, có nguồn")]
+        web["web_search"] --> tavily["Tavily<br/>3 kết quả"]
+    end
+
+    agent -->|"gọi tool"| faq & rate & branch & web
 ```
 
 ### Luồng xử lý một câu hỏi
@@ -687,6 +691,8 @@ Khi chạm giới hạn, SDK tự chờ rồi thử lại vài lần. Nếu cả
 | curl gửi tiếng Việt bị 400 | curl của Git Bash gửi sai mã hóa | Dùng PowerShell, Swagger UI (`/docs`) hoặc Python |
 | `langgraph dev` reload liên tục ("WatchFiles detected changes in .venv") | Có tiến trình khác đang ghi vào `.venv` cùng lúc (vd cài thư viện, chạy server khác) | Chờ tiến trình kia xong rồi chạy lại |
 | Sửa code/dữ liệu nhưng Docker không thay đổi | Image cũ | `docker compose up -d --build api` |
+| `docker compose up` báo `port is already allocated` hoặc `container name "/qdrant" is already in use` | Project khác đang dùng cổng 8000/6333 hoặc tên container `qdrant` | Dừng project kia, hoặc đổi cổng (`"8001:8000"`) và `container_name` trong `docker-compose.yml` |
+| Chạy bằng `docker run --env-file .env` thì mọi LLM báo sai key | `docker run` giữ nguyên dấu nháy `'...'` quanh giá trị trong `.env` (compose thì bỏ nháy) | Dùng `docker compose`, hoặc bỏ dấu nháy trong `.env` |
 
 ## Lưu ý về dữ liệu chi nhánh
 
