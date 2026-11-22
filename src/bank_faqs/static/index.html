@@ -20,7 +20,9 @@
   h1 { font-size: 18px; margin: 0; }
   button { font: inherit; cursor: pointer; border-radius: 8px; }
   #reset { background: none; border: 1px solid var(--line); color: var(--muted); padding: 4px 10px; }
-  #log { flex: 1; overflow-y: auto; padding: 16px 0; display: flex; flex-direction: column; gap: 10px; }
+  #log { flex: 1; overflow-y: auto; padding: 16px 0; display: flex; flex-direction: column; gap: 10px;
+         scrollbar-width: none; }
+  #log::-webkit-scrollbar { display: none; }
   .msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; background: var(--card);
          border: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; }
   .me { align-self: flex-end; background: var(--me); border-color: transparent; }
